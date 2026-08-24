@@ -33,6 +33,7 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 - LOCAL_NED 位置目标的限速渐进运动（水平 1.4 m/s、垂直 0.8/0.6 m/s）
 - 水平运动对应的四旋翼倾斜姿态和速度遥测
 - 游戏内 `/minidrone status` 状态检查命令
+- 游戏内 `/minidrone selftest` 一次运行虚拟飞行和训练场闭环自检
 - 游戏内 `/minidrone origin set` 原点重设命令（仅 SAFE 落地状态）
 - 游戏内 `/minidrone arena create|clear` 训练场生成与安全清理命令
 - 训练场 3x3 降落标记和 `/minidrone arena status` 中心坐标查询
@@ -46,13 +47,14 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 .\gradlew.bat test
+.\gradlew.bat closedLoopTest
 .\gradlew.bat build
 ```
 
 生成的可加载 JAR 位于：
 
 ```text
-build/libs/mini-drone-system-mod-0.5.0.jar
+build/libs/mini-drone-system-mod-0.6.0.jar
 ```
 
 ## 安装到 PCL
@@ -166,6 +168,7 @@ world.z = -north
 
 ```text
 /minidrone status
+/minidrone selftest
 /minidrone origin set
 /minidrone arena create
 /minidrone arena create <x> <y> <z>
@@ -180,3 +183,15 @@ world.z = -north
 `arena create` 默认在玩家水平视线前方约 10 格、目标柱的无树叶地表建立平台；也可以用 `/minidrone arena create <x> <y> <z>` 指定平台中心方块坐标。它会建立 13x13 平整训练平台：平滑石平台、红色边界线、四角海晶灯标记和中心 3x3 降落标记（白色边框、黑色中心）。模组会把实际放置的方块保存到世界数据中；`arena status` 可复制当前中心坐标；`arena clear` 只删除仍保持模组生成状态的已登记方块，玩家替换或破坏过的方块会被保留。训练场已存在时必须先清理，避免误覆盖其他建筑。
 
 中心选择工具列入后续阶段：计划增加一个专用选择器，右键方块记录场地中心，再通过 `arena create selected` 生成，减少手工输入坐标；当前版本的绝对坐标命令仍是确定性调试入口。
+
+`selftest` 不会改变当前世界中的无人机、场地或主项目连接。它在内存中运行 8 项闭环检查：GUIDED/ARM 门禁、起飞、限速航点、降落解锁、Local NED 重置、MAVLink 心跳编解码、坐标变换和训练场布局。训练场存档往返由世界加载/保存路径负责。开发阶段可直接运行 `\.\gradlew.bat closedLoopTest`，进入游戏后只需执行一次 `/minidrone selftest` 即可确认客户端加载了同一套逻辑。
+
+一次启动的建议验证顺序：
+
+```text
+/minidrone selftest
+/minidrone status
+/minidrone arena status
+```
+
+只有需要验证场地视觉布局时才执行 `arena create`；需要重新定位时使用带坐标的 `arena create <x> <y> <z>`，不必反复退出并重启游戏。

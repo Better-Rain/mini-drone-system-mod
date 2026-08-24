@@ -50,6 +50,12 @@ tasks.withType(Test).configureEach {
 	useJUnitPlatform()
 }
 
+tasks.register('closedLoopTest') {
+	group = 'verification'
+	description = 'Runs the deterministic virtual flight and arena closed-loop tests.'
+	dependsOn test
+}
+
 // Forward only this mod's development properties to Loom's game JVM.
 tasks.withType(JavaExec).configureEach {
 	System.properties.findAll { key, _ -> key.toString().startsWith('mini_drone.') }

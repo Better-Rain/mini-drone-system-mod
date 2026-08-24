@@ -3,6 +3,7 @@ package com.vltbr.minidrone;
 import com.vltbr.minidrone.mavlink.MavlinkTransport;
 import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
+import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
 import com.vltbr.minidrone.world.TrainingArenaController;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -37,6 +38,7 @@ public final class MiniDroneMod implements ModInitializer {
             dispatcher.register(
                 literal("minidrone")
                     .then(literal("status").executes(context -> reportStatus(context.getSource())))
+                    .then(literal("selftest").executes(context -> runSelfTest(context.getSource())))
                     .then(literal("origin")
                         .then(literal("set").executes(context -> resetOrigin(context.getSource()))))
                     .then(literal("arena")
@@ -177,6 +179,17 @@ public final class MiniDroneMod implements ModInitializer {
             "Training arena cleared: removed=%d, preserved_changed=%d",
             result.removed(), result.preserved())), false);
         return 1;
+    }
+
+    private int runSelfTest(CommandSourceStack source) {
+        VirtualSystemSelfTest.Report report = VirtualSystemSelfTest.run();
+        Component message = copyableMessage(report.summary());
+        if (report.successful()) {
+            source.sendSuccess(() -> message, false);
+            return 1;
+        }
+        source.sendFailure(message);
+        return 0;
     }
 
     private int reportArenaStatus(CommandSourceStack source) {
