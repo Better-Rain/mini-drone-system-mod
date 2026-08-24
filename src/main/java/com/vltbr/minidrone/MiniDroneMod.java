@@ -9,8 +9,11 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.ChatFormatting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,14 +77,15 @@ public final class MiniDroneMod implements ModInitializer {
             return 0;
         }
         var state = droneManager.snapshot();
-        source.sendSuccess(() -> Component.literal(String.format(
+        String status = String.format(
             "Virtual drone %s: mode=%s, armed=%s, NED=(%.2f, %.2f, %.2f), velocity=(%.2f, %.2f, %.2f) m/s",
             state.droneId(),
             state.guided() ? "GUIDED" : state.customMode() == 9 ? "LAND" : "SAFE",
             state.armed(),
             state.northM(), state.eastM(), state.downM(),
             state.velocityNorthMps(), state.velocityEastMps(), state.velocityDownMps()
-        )), false);
+        );
+        source.sendSuccess(() -> copyableMessage(status), false);
         return 1;
     }
 
@@ -99,13 +103,32 @@ public final class MiniDroneMod implements ModInitializer {
         }
         VirtualDroneManager.OriginResetResult result = droneManager.resetFlightOrigin(player);
         switch (result) {
-            case RESET -> source.sendSuccess(
-                () -> Component.literal("Virtual flight origin reset in front of the player."), false);
+            case RESET -> {
+                var origin = droneManager.flightOrigin();
+                String message = String.format(
+                    "Virtual flight origin reset in front of the player: Minecraft=(%.2f, %.2f, %.2f)",
+                    origin.originX(), origin.originY(), origin.originZ()
+                );
+                source.sendSuccess(() -> copyableMessage(message), false);
+            }
             case DRONE_ACTIVE -> source.sendFailure(
                 Component.literal("Land and disarm the virtual drone before resetting its origin."));
             case WRONG_DIMENSION -> source.sendFailure(
                 Component.literal("The virtual flight origin can only be reset in the Overworld."));
         }
         return result == VirtualDroneManager.OriginResetResult.RESET ? 1 : 0;
+    }
+
+    private static Component copyableMessage(String message) {
+        return Component.literal(message)
+            .append(Component.literal(" "))
+            .append(Component.literal("[COPY]")
+                .withStyle(style -> style
+                    .withColor(ChatFormatting.AQUA)
+                    .withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD, message))
+                    .withHoverEvent(new HoverEvent(
+                        HoverEvent.Action.SHOW_TEXT,
+                        Component.literal("Copy to clipboard")
+                    ))));
     }
 }

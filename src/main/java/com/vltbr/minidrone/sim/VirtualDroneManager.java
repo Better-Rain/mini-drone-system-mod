@@ -1,6 +1,7 @@
 package com.vltbr.minidrone.sim;
 
 import com.vltbr.minidrone.world.DroneWorldController;
+import com.vltbr.minidrone.world.NedWorldTransform;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
@@ -72,6 +73,10 @@ public final class VirtualDroneManager {
         publish();
         worldController.resetOrigin(player, snapshot());
         return OriginResetResult.RESET;
+    }
+
+    public NedWorldTransform flightOrigin() {
+        return worldController.origin();
     }
 
     public MinecraftServer server() {

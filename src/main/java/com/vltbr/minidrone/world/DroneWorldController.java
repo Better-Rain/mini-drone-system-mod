@@ -64,6 +64,10 @@ public final class DroneWorldController implements AutoCloseable {
         logOrigin("Reset origin for", snapshot);
     }
 
+    public NedWorldTransform origin() {
+        return transform;
+    }
+
     private NedWorldTransform transformInFrontOf(ServerPlayer player) {
         Vec3 look = player.getLookAngle();
         Vec3 horizontalLook = new Vec3(look.x, 0.0, look.z);

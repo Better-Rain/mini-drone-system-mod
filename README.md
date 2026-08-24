@@ -50,7 +50,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 生成的可加载 JAR 位于：
 
 ```text
-build/libs/mini-drone-system-mod-0.3.0.jar
+build/libs/mini-drone-system-mod-0.3.1.jar
 ```
 
 ## 安装到 PCL
@@ -168,3 +168,5 @@ world.z = -north
 ```
 
 `origin set` 会将原点移动到执行命令玩家水平视线前方约 2 米，并把虚拟飞控的 Local NED 位置清零。为避免飞行中坐标系突变，该命令只接受已落地且已解锁的无人机。
+
+两条命令的成功返回末尾都有 `[COPY]` 按钮。点击后会把完整返回文本复制到系统剪贴板，便于提交调试日志；按钮悬停时会显示复制提示。
