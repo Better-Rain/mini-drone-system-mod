@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class MavlinkTransport {
     private static final String DEFAULT_HOST = "127.0.0.1";
@@ -37,6 +38,16 @@ public final class MavlinkTransport {
     private final boolean mocapHealthEnabled;
     private final int mocapHealthPort;
     private final VirtualAutopilot autopilot;
+    private final AtomicLong receivedPackets = new AtomicLong();
+    private final AtomicLong receivedFrames = new AtomicLong();
+    private final AtomicLong transmittedFrames = new AtomicLong();
+    private final AtomicLong healthBeaconsSent = new AtomicLong();
+    private volatile boolean socketBound;
+    private volatile int boundLocalPort;
+    private volatile long lastInboundAtMs;
+    private volatile long lastOutboundAtMs;
+    private volatile int lastInboundMessageId = -1;
+    private volatile String lastInboundEndpoint = "-";
     private Thread ioThread;
     private int sequence;
 
@@ -71,6 +82,8 @@ public final class MavlinkTransport {
         if (!running.compareAndSet(true, false)) {
             return;
         }
+        socketBound = false;
+        boundLocalPort = 0;
         if (ioThread != null) {
             ioThread.interrupt();
             try {
@@ -82,6 +95,25 @@ public final class MavlinkTransport {
         }
     }
 
+    public MavlinkLinkStatus status() {
+        return new MavlinkLinkStatus(
+            running.get(),
+            socketBound,
+            boundLocalPort,
+            remoteAddress.getHostAddress(),
+            remotePort,
+            receivedPackets.get(),
+            receivedFrames.get(),
+            transmittedFrames.get(),
+            healthBeaconsSent.get(),
+            lastInboundAtMs,
+            lastOutboundAtMs,
+            lastInboundMessageId,
+            lastInboundEndpoint,
+            mocapHealthEnabled
+        );
+    }
+
     private void runIoLoop() {
         long nextFastTelemetryAt = 0L;
         long nextExtendedStateAt = 0L;
@@ -91,6 +123,8 @@ public final class MavlinkTransport {
         try (DatagramSocket socket = new DatagramSocket(null)) {
             socket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), localPort));
             socket.setSoTimeout(20);
+            boundLocalPort = socket.getLocalPort();
+            socketBound = true;
             MiniDroneMod.LOGGER.info(
                 "MAVLink UDP transport bound to {} and targeting {}:{}",
                 socket.getLocalSocketAddress(),
@@ -151,8 +185,15 @@ public final class MavlinkTransport {
                 DatagramPacket inbound = new DatagramPacket(buffer, buffer.length);
                 try {
                     socket.receive(inbound);
-                    MavlinkV1Codec.decode(inbound.getData(), inbound.getLength())
-                        .forEach(autopilot::handle);
+                    receivedPackets.incrementAndGet();
+                    lastInboundAtMs = System.currentTimeMillis();
+                    lastInboundEndpoint = String.valueOf(inbound.getSocketAddress());
+                    var frames = MavlinkV1Codec.decode(inbound.getData(), inbound.getLength());
+                    receivedFrames.addAndGet(frames.size());
+                    if (!frames.isEmpty()) {
+                        lastInboundMessageId = frames.get(frames.size() - 1).messageId();
+                    }
+                    frames.forEach(autopilot::handle);
                 } catch (SocketTimeoutException ignored) {
                     // The short timeout drives periodic telemetry and responsive shutdown.
                 }
@@ -161,6 +202,10 @@ public final class MavlinkTransport {
             if (running.get()) {
                 MiniDroneMod.LOGGER.error("MAVLink UDP transport stopped unexpectedly", exception);
             }
+        } finally {
+            socketBound = false;
+            boundLocalPort = 0;
+            running.set(false);
         }
     }
 
@@ -174,6 +219,8 @@ public final class MavlinkTransport {
             payload
         );
         socket.send(new DatagramPacket(frame, frame.length, remoteAddress, remotePort));
+        transmittedFrames.incrementAndGet();
+        lastOutboundAtMs = System.currentTimeMillis();
     }
 
     private void sendMocapHealth(DatagramSocket socket, VirtualDroneSnapshot state)
@@ -209,5 +256,6 @@ public final class MavlinkTransport {
             InetAddress.getLoopbackAddress(),
             mocapHealthPort
         ));
+        healthBeaconsSent.incrementAndGet();
     }
 }

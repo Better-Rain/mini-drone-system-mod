@@ -1,6 +1,7 @@
 package com.vltbr.minidrone;
 
 import com.vltbr.minidrone.mavlink.MavlinkTransport;
+import com.vltbr.minidrone.mavlink.MavlinkLinkStatus;
 import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
@@ -38,6 +39,8 @@ public final class MiniDroneMod implements ModInitializer {
             dispatcher.register(
                 literal("minidrone")
                     .then(literal("status").executes(context -> reportStatus(context.getSource())))
+                    .then(literal("link")
+                        .then(literal("status").executes(context -> reportLinkStatus(context.getSource()))))
                     .then(literal("selftest").executes(context -> runSelfTest(context.getSource())))
                     .then(literal("origin")
                         .then(literal("set").executes(context -> resetOrigin(context.getSource()))))
@@ -104,6 +107,33 @@ public final class MiniDroneMod implements ModInitializer {
         );
         source.sendSuccess(() -> copyableMessage(status), false);
         return 1;
+    }
+
+    private int reportLinkStatus(CommandSourceStack source) {
+        if (mavlinkTransport == null) {
+            source.sendFailure(Component.literal("MAVLink transport is not running."));
+            return 0;
+        }
+        MavlinkLinkStatus status = mavlinkTransport.status();
+        long now = System.currentTimeMillis();
+        String lastRx = status.lastInboundAtMs() == 0
+            ? "never"
+            : (Math.max(0L, now - status.lastInboundAtMs()) + "ms ago");
+        String lastTx = status.lastOutboundAtMs() == 0
+            ? "never"
+            : (Math.max(0L, now - status.lastOutboundAtMs()) + "ms ago");
+        String message = String.format(
+            "MAVLink link: state=%s, remote=%s:%d, local=127.0.0.1:%d, "
+                + "backend_fresh=%s, rx_packets=%d, rx_frames=%d, tx_frames=%d, "
+                + "last_rx=%s, last_tx=%s, mocap_health=%s",
+            status.state(),
+            status.remoteHost(), status.remotePort(), status.localPort(),
+            status.backendFresh(now), status.receivedPackets(), status.receivedFrames(),
+            status.transmittedFrames(), lastRx, lastTx,
+            status.mocapHealthEnabled()
+        );
+        source.sendSuccess(() -> copyableMessage(message), false);
+        return status.state() == MavlinkLinkStatus.LinkState.DOWN ? 0 : 1;
     }
 
     private int resetOrigin(CommandSourceStack source) {

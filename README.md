@@ -33,6 +33,7 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 - LOCAL_NED 位置目标的限速渐进运动（水平 1.4 m/s、垂直 0.8/0.6 m/s）
 - 水平运动对应的四旋翼倾斜姿态和速度遥测
 - 游戏内 `/minidrone status` 状态检查命令
+- 游戏内 `/minidrone link status` 后端连接状态和收发计数检查
 - 游戏内 `/minidrone selftest` 一次运行虚拟飞行和训练场闭环自检
 - 游戏内 `/minidrone origin set` 原点重设命令（仅 SAFE 落地状态）
 - 游戏内 `/minidrone arena create|clear` 训练场生成与安全清理命令
@@ -54,7 +55,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 生成的可加载 JAR 位于：
 
 ```text
-build/libs/mini-drone-system-mod-0.6.0.jar
+build/libs/mini-drone-system-mod-0.7.0.jar
 ```
 
 ## 安装到 PCL
@@ -168,6 +169,7 @@ world.z = -north
 
 ```text
 /minidrone status
+/minidrone link status
 /minidrone selftest
 /minidrone origin set
 /minidrone arena create
@@ -191,6 +193,7 @@ world.z = -north
 ```text
 /minidrone selftest
 /minidrone status
+/minidrone link status
 /minidrone arena status
 ```
 
