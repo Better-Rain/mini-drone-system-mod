@@ -3,6 +3,7 @@ package com.vltbr.minidrone;
 import com.vltbr.minidrone.mavlink.MavlinkTransport;
 import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
+import com.vltbr.minidrone.world.TrainingArenaController;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -24,6 +25,7 @@ public final class MiniDroneMod implements ModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     private VirtualDroneManager droneManager;
+    private TrainingArenaController trainingArenaController;
     private MavlinkTransport mavlinkTransport;
 
     @Override
@@ -36,11 +38,15 @@ public final class MiniDroneMod implements ModInitializer {
                     .then(literal("status").executes(context -> reportStatus(context.getSource())))
                     .then(literal("origin")
                         .then(literal("set").executes(context -> resetOrigin(context.getSource()))))
+                    .then(literal("arena")
+                        .then(literal("create").executes(context -> createArena(context.getSource())))
+                        .then(literal("clear").executes(context -> clearArena(context.getSource()))))
             )
         );
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             droneManager = new VirtualDroneManager(server);
+            trainingArenaController = new TrainingArenaController(server);
             mavlinkTransport = new MavlinkTransport(server, droneManager);
             mavlinkTransport.start();
             LOGGER.info("Mini Drone System virtual flight controller started");
@@ -61,6 +67,7 @@ public final class MiniDroneMod implements ModInitializer {
                 droneManager.close();
             }
             droneManager = null;
+            trainingArenaController = null;
             LOGGER.info("Mini Drone System virtual flight controller stopped");
         });
 
@@ -117,6 +124,48 @@ public final class MiniDroneMod implements ModInitializer {
                 Component.literal("The virtual flight origin can only be reset in the Overworld."));
         }
         return result == VirtualDroneManager.OriginResetResult.RESET ? 1 : 0;
+    }
+
+    private int createArena(CommandSourceStack source) {
+        if (trainingArenaController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("This command must be run by a player in the Overworld."));
+            return 0;
+        }
+        var result = trainingArenaController.create(player);
+        switch (result.status()) {
+            case CREATED -> source.sendSuccess(() -> copyableMessage(String.format(
+                "Training arena created: placed=%d, skipped=%d", result.placed(), result.skipped())), false);
+            case ALREADY_EXISTS -> source.sendFailure(
+                Component.literal("A training arena is already recorded in this world. Clear it first."));
+            case WRONG_DIMENSION -> source.sendFailure(
+                Component.literal("The training arena can only be created in the Overworld."));
+            case NO_SPACE -> source.sendFailure(
+                Component.literal("No air space was available for the training arena."));
+        }
+        return result.status() == TrainingArenaController.CreateStatus.CREATED ? 1 : 0;
+    }
+
+    private int clearArena(CommandSourceStack source) {
+        if (trainingArenaController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        var result = trainingArenaController.clear();
+        if (result.status() == TrainingArenaController.ClearStatus.NOT_FOUND) {
+            source.sendFailure(Component.literal("No recorded training arena exists in this world."));
+            return 0;
+        }
+        source.sendSuccess(() -> copyableMessage(String.format(
+            "Training arena cleared: removed=%d, preserved_changed=%d",
+            result.removed(), result.preserved())), false);
+        return 1;
     }
 
     private static Component copyableMessage(String message) {

@@ -34,8 +34,9 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 - 水平运动对应的四旋翼倾斜姿态和速度遥测
 - 游戏内 `/minidrone status` 状态检查命令
 - 游戏内 `/minidrone origin set` 原点重设命令（仅 SAFE 落地状态）
+- 游戏内 `/minidrone arena create|clear` 训练场生成与安全清理命令
 
-训练场地、障碍物/降落点和更完整的姿态控制尚未实现，将在后续阶段加入。
+障碍物/降落点和更完整的姿态控制尚未实现，将在后续阶段加入。
 
 ## 构建
 
@@ -50,7 +51,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 生成的可加载 JAR 位于：
 
 ```text
-build/libs/mini-drone-system-mod-0.3.1.jar
+build/libs/mini-drone-system-mod-0.4.0.jar
 ```
 
 ## 安装到 PCL
@@ -165,8 +166,12 @@ world.z = -north
 ```text
 /minidrone status
 /minidrone origin set
+/minidrone arena create
+/minidrone arena clear
 ```
 
 `origin set` 会将原点移动到执行命令玩家水平视线前方约 2 米，并把虚拟飞控的 Local NED 位置清零。为避免飞行中坐标系突变，该命令只接受已落地且已解锁的无人机。
 
-两条命令的成功返回末尾都有 `[COPY]` 按钮。点击后会把完整返回文本复制到系统剪贴板，便于提交调试日志；按钮悬停时会显示复制提示。
+成功的调试命令返回末尾都有 `[COPY]` 按钮。点击后会把完整返回文本复制到系统剪贴板，便于提交调试日志；按钮悬停时会显示复制提示。
+
+`arena create` 会在执行玩家附近最高地表上方建立 13x13 平整训练平台：平滑石平台、红色边界线和四角海晶灯标记。模组会把实际放置的方块保存到世界数据中；`arena clear` 只删除仍保持模组生成状态的已登记方块，玩家替换或破坏过的方块会被保留。训练场已存在时必须先清理，避免误覆盖其他建筑。

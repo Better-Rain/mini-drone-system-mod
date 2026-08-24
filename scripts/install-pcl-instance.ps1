@@ -2,7 +2,7 @@
 param(
     [string]$MinecraftRoot = "C:\Users\VLT_BR\Saved Games\Minecraft\.minecraft",
     [string]$InstanceName = "Mini Drone System 1.21.1",
-    [string]$ModJar = "build\libs\mini-drone-system-mod-0.3.1.jar",
+    [string]$ModJar = "build\libs\mini-drone-system-mod-0.4.0.jar",
     [string]$MinecraftVersion = "1.21.1",
     [string]$LoaderVersion = "0.19.3",
     [string]$FabricApiVersion = "0.116.15+1.21.1"
