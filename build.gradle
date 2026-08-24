@@ -1,0 +1,64 @@
+plugins {
+	id 'fabric-loom' version "${loom_version}"
+}
+
+group = project.maven_group
+version = project.mod_version
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	// Fabric Loom supplies the Minecraft and Fabric repositories.
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"mini_drone_system_mod" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	testImplementation platform('org.junit:junit-bom:5.10.3')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": project.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.release = 21
+}
+
+tasks.withType(Test).configureEach {
+	useJUnitPlatform()
+}
+
+// Forward only this mod's development properties to Loom's game JVM.
+tasks.withType(JavaExec).configureEach {
+	System.properties.findAll { key, _ -> key.toString().startsWith('mini_drone.') }
+		.each { key, value -> systemProperty key.toString(), value.toString() }
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+	withSourcesJar()
+}

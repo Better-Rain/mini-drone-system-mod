@@ -1,0 +1,111 @@
+package com.vltbr.minidrone;
+
+import com.vltbr.minidrone.mavlink.MavlinkTransport;
+import com.vltbr.minidrone.entity.ModEntityTypes;
+import com.vltbr.minidrone.sim.VirtualDroneManager;
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.resources.ResourceLocation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static net.minecraft.commands.Commands.literal;
+
+public final class MiniDroneMod implements ModInitializer {
+    public static final String MOD_ID = "mini_drone_system_mod";
+    public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+    private VirtualDroneManager droneManager;
+    private MavlinkTransport mavlinkTransport;
+
+    @Override
+    public void onInitialize() {
+        ModEntityTypes.initialize();
+
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
+            dispatcher.register(
+                literal("minidrone")
+                    .then(literal("status").executes(context -> reportStatus(context.getSource())))
+                    .then(literal("origin")
+                        .then(literal("set").executes(context -> resetOrigin(context.getSource()))))
+            )
+        );
+
+        ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+            droneManager = new VirtualDroneManager(server);
+            mavlinkTransport = new MavlinkTransport(server, droneManager);
+            mavlinkTransport.start();
+            LOGGER.info("Mini Drone System virtual flight controller started");
+        });
+
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            if (droneManager != null) {
+                droneManager.tick();
+            }
+        });
+
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+            if (mavlinkTransport != null) {
+                mavlinkTransport.stop();
+                mavlinkTransport = null;
+            }
+            if (droneManager != null) {
+                droneManager.close();
+            }
+            droneManager = null;
+            LOGGER.info("Mini Drone System virtual flight controller stopped");
+        });
+
+        LOGGER.info("Mini Drone System Mod initialized");
+    }
+
+    public static ResourceLocation id(String path) {
+        return ResourceLocation.fromNamespaceAndPath(MOD_ID, path);
+    }
+
+    private int reportStatus(CommandSourceStack source) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        var state = droneManager.snapshot();
+        source.sendSuccess(() -> Component.literal(String.format(
+            "Virtual drone %s: mode=%s, armed=%s, NED=(%.2f, %.2f, %.2f), velocity=(%.2f, %.2f, %.2f) m/s",
+            state.droneId(),
+            state.guided() ? "GUIDED" : state.customMode() == 9 ? "LAND" : "SAFE",
+            state.armed(),
+            state.northM(), state.eastM(), state.downM(),
+            state.velocityNorthMps(), state.velocityEastMps(), state.velocityDownMps()
+        )), false);
+        return 1;
+    }
+
+    private int resetOrigin(CommandSourceStack source) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("This command must be run by a player in the Overworld."));
+            return 0;
+        }
+        VirtualDroneManager.OriginResetResult result = droneManager.resetFlightOrigin(player);
+        switch (result) {
+            case RESET -> source.sendSuccess(
+                () -> Component.literal("Virtual flight origin reset in front of the player."), false);
+            case DRONE_ACTIVE -> source.sendFailure(
+                Component.literal("Land and disarm the virtual drone before resetting its origin."));
+            case WRONG_DIMENSION -> source.sendFailure(
+                Component.literal("The virtual flight origin can only be reset in the Overworld."));
+        }
+        return result == VirtualDroneManager.OriginResetResult.RESET ? 1 : 0;
+    }
+}

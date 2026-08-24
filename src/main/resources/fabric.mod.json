@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"id": "mini_drone_system_mod",
+	"version": "${version}",
+	"name": "Mini Drone System Mod",
+	"description": "Virtual drone and motion-capture training environment for Mini Drone System.",
+	"authors": ["VLT_BR"],
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.vltbr.minidrone.MiniDroneMod"
+		],
+		"client": [
+			"com.vltbr.minidrone.client.MiniDroneClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.16.0",
+		"minecraft": "~1.21.1",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
