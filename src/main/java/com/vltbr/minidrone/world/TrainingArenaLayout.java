@@ -51,7 +51,14 @@ public final class TrainingArenaLayout {
         for (int dx = -RADIUS; dx <= RADIUS; dx++) {
             for (int dz = -RADIUS; dz <= RADIUS; dz++) {
                 boolean edge = Math.abs(dx) == RADIUS || Math.abs(dz) == RADIUS;
-                result.add(new RelativeBlock(dx, 0, dz, edge ? Kind.BORDER : Kind.PLATFORM));
+                Kind surfaceKind = edge
+                    ? Kind.BORDER
+                    : dx == 0 && dz == 0
+                        ? Kind.LANDING_CENTER
+                        : Math.abs(dx) <= 1 && Math.abs(dz) <= 1
+                            ? Kind.LANDING_PAD
+                            : Kind.PLATFORM;
+                result.add(new RelativeBlock(dx, 0, dz, surfaceKind));
                 if (Math.abs(dx) == RADIUS && Math.abs(dz) == RADIUS) {
                     result.add(new RelativeBlock(dx, 1, dz, Kind.CORNER_MARKER));
                 }
@@ -63,7 +70,9 @@ public final class TrainingArenaLayout {
     public enum Kind {
         PLATFORM,
         BORDER,
-        CORNER_MARKER
+        CORNER_MARKER,
+        LANDING_PAD,
+        LANDING_CENTER
     }
 
     public record RelativeBlock(int dx, int dy, int dz, Kind kind) {

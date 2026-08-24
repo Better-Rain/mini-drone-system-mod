@@ -47,6 +47,7 @@ public final class MiniDroneMod implements ModInitializer {
                                 .executes(context -> createArena(
                                     context.getSource(),
                                     BlockPosArgument.getBlockPos(context, "center")))))
+                        .then(literal("status").executes(context -> reportArenaStatus(context.getSource())))
                         .then(literal("clear").executes(context -> clearArena(context.getSource()))))
             )
         );
@@ -175,6 +176,22 @@ public final class MiniDroneMod implements ModInitializer {
         source.sendSuccess(() -> copyableMessage(String.format(
             "Training arena cleared: removed=%d, preserved_changed=%d",
             result.removed(), result.preserved())), false);
+        return 1;
+    }
+
+    private int reportArenaStatus(CommandSourceStack source) {
+        if (trainingArenaController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        var info = trainingArenaController.info();
+        if (!info.present()) {
+            source.sendFailure(Component.literal("No recorded training arena exists in this world."));
+            return 0;
+        }
+        source.sendSuccess(() -> copyableMessage(String.format(
+            "Training arena center=(%d, %d, %d), recorded_blocks=%d",
+            info.centerX(), info.topY(), info.centerZ(), info.recordedBlocks())), false);
         return 1;
     }
 

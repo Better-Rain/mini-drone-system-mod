@@ -16,9 +16,11 @@ class TrainingArenaLayoutTest {
         Map<TrainingArenaLayout.Kind, Long> counts = layout.blocks().stream()
             .collect(Collectors.groupingBy(TrainingArenaLayout.RelativeBlock::kind, Collectors.counting()));
 
-        assertEquals(121L, counts.get(TrainingArenaLayout.Kind.PLATFORM));
+        assertEquals(112L, counts.get(TrainingArenaLayout.Kind.PLATFORM));
         assertEquals(48L, counts.get(TrainingArenaLayout.Kind.BORDER));
         assertEquals(4L, counts.get(TrainingArenaLayout.Kind.CORNER_MARKER));
+        assertEquals(8L, counts.get(TrainingArenaLayout.Kind.LANDING_PAD));
+        assertEquals(1L, counts.get(TrainingArenaLayout.Kind.LANDING_CENTER));
         assertEquals(173, layout.blocks().size());
         assertEquals(10, layout.centerX());
         assertEquals(70, layout.topY());
@@ -31,10 +33,9 @@ class TrainingArenaLayoutTest {
 
         assertTrue(layout.blocks().stream().anyMatch(block ->
             block.dx() == 0 && block.dy() == 0 && block.dz() == 0
-                && block.kind() == TrainingArenaLayout.Kind.PLATFORM));
-        assertEquals(1, layout.blocks().stream()
-            .filter(block -> block.kind() == TrainingArenaLayout.Kind.PLATFORM)
-            .filter(block -> block.dx() == 0 && block.dz() == 0)
+                && block.kind() == TrainingArenaLayout.Kind.LANDING_CENTER));
+        assertEquals(8, layout.blocks().stream()
+            .filter(block -> block.kind() == TrainingArenaLayout.Kind.LANDING_PAD)
             .count());
     }
 }

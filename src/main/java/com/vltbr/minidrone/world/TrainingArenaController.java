@@ -100,6 +100,20 @@ public final class TrainingArenaController {
         return savedData.hasArena();
     }
 
+    public ArenaInfo info() {
+        if (!savedData.hasArena()) {
+            return new ArenaInfo(false, 0, 0, 0, 0);
+        }
+        TrainingArenaLayout layout = savedData.layout();
+        return new ArenaInfo(
+            true,
+            layout.centerX(),
+            layout.topY(),
+            layout.centerZ(),
+            savedData.placedBlocks().size()
+        );
+    }
+
     private static BlockPos defaultCenter(ServerLevel level, ServerPlayer player) {
         Vec3 look = player.getLookAngle();
         Vec3 horizontalLook = new Vec3(look.x, 0.0, look.z);
@@ -123,6 +137,8 @@ public final class TrainingArenaController {
             case PLATFORM -> Blocks.SMOOTH_STONE.defaultBlockState();
             case BORDER -> Blocks.RED_CONCRETE.defaultBlockState();
             case CORNER_MARKER -> Blocks.SEA_LANTERN.defaultBlockState();
+            case LANDING_PAD -> Blocks.WHITE_CONCRETE.defaultBlockState();
+            case LANDING_CENTER -> Blocks.BLACK_CONCRETE.defaultBlockState();
         };
     }
 
@@ -142,4 +158,5 @@ public final class TrainingArenaController {
         }
     }
     public record ClearResult(ClearStatus status, int removed, int preserved) { }
+    public record ArenaInfo(boolean present, int centerX, int topY, int centerZ, int recordedBlocks) { }
 }
