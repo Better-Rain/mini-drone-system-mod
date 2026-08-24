@@ -9,12 +9,14 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public final class TrainingArenaController {
     private static final int UPDATE_FLAGS = Block.UPDATE_ALL;
+    private static final double DEFAULT_FORWARD_DISTANCE = TrainingArenaLayout.RADIUS + 4.0;
 
     private final MinecraftServer server;
     private final TrainingArenaSavedData savedData;
@@ -26,6 +28,10 @@ public final class TrainingArenaController {
     }
 
     public CreateResult create(ServerPlayer player) {
+        return create(player, null);
+    }
+
+    public CreateResult create(ServerPlayer player, BlockPos requestedCenter) {
         if (player.serverLevel() != server.overworld()) {
             return new CreateResult(CreateStatus.WRONG_DIMENSION, 0, 0);
         }
@@ -34,11 +40,14 @@ public final class TrainingArenaController {
         }
 
         ServerLevel level = server.overworld();
-        BlockPos playerPos = player.blockPosition();
-        // Leave one air block above the tallest nearby surface so the layout never
-        // overlaps the player or replaces terrain while still staying close by.
-        int topY = highestSurface(level, playerPos) + 1;
-        TrainingArenaLayout layout = TrainingArenaLayout.centered(playerPos.getX(), topY, playerPos.getZ());
+        BlockPos center = requestedCenter != null
+            ? requestedCenter
+            : defaultCenter(level, player);
+        if (center.getY() < level.getMinBuildHeight() || center.getY() >= level.getMaxBuildHeight()) {
+            return new CreateResult(CreateStatus.INVALID_POSITION, 0, 0);
+        }
+        TrainingArenaLayout layout = TrainingArenaLayout.centered(
+            center.getX(), center.getY(), center.getZ());
         List<TrainingArenaSavedData.PlacedBlock> placed = new ArrayList<>();
         int skipped = 0;
         for (TrainingArenaLayout.RelativeBlock block : layout.blocks()) {
@@ -91,15 +100,22 @@ public final class TrainingArenaController {
         return savedData.hasArena();
     }
 
-    private static int highestSurface(ServerLevel level, BlockPos center) {
-        int highest = center.getY();
-        for (int dx = -TrainingArenaLayout.RADIUS; dx <= TrainingArenaLayout.RADIUS; dx++) {
-            for (int dz = -TrainingArenaLayout.RADIUS; dz <= TrainingArenaLayout.RADIUS; dz++) {
-                highest = Math.max(highest, level.getHeight(
-                    Heightmap.Types.WORLD_SURFACE, center.getX() + dx, center.getZ() + dz));
-            }
+    private static BlockPos defaultCenter(ServerLevel level, ServerPlayer player) {
+        Vec3 look = player.getLookAngle();
+        Vec3 horizontalLook = new Vec3(look.x, 0.0, look.z);
+        if (horizontalLook.lengthSqr() < 1.0E-6) {
+            horizontalLook = new Vec3(0.0, 0.0, 1.0);
+        } else {
+            horizontalLook = horizontalLook.normalize();
         }
-        return highest;
+        int targetX = (int) Math.floor(player.getX() + horizontalLook.x * DEFAULT_FORWARD_DISTANCE);
+        int targetZ = (int) Math.floor(player.getZ() + horizontalLook.z * DEFAULT_FORWARD_DISTANCE);
+        // WORLD_SURFACE includes leaves and nearby terrain can be much higher than
+        // the player. Use the target column and ignore leaf canopies for the
+        // default anchor; explicit coordinates remain available for exact layouts.
+        int surfaceY = level.getHeight(
+            Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, targetX, targetZ);
+        return new BlockPos(targetX, surfaceY, targetZ);
     }
 
     private static BlockState stateFor(TrainingArenaLayout.Kind kind) {
@@ -110,9 +126,20 @@ public final class TrainingArenaController {
         };
     }
 
-    public enum CreateStatus { CREATED, ALREADY_EXISTS, WRONG_DIMENSION, NO_SPACE }
+    public enum CreateStatus { CREATED, ALREADY_EXISTS, WRONG_DIMENSION, NO_SPACE, INVALID_POSITION }
     public enum ClearStatus { CLEARED, NOT_FOUND }
 
-    public record CreateResult(CreateStatus status, int placed, int skipped) { }
+    public record CreateResult(
+        CreateStatus status,
+        int placed,
+        int skipped,
+        int centerX,
+        int topY,
+        int centerZ
+    ) {
+        public CreateResult(CreateStatus status, int placed, int skipped) {
+            this(status, placed, skipped, 0, 0, 0);
+        }
+    }
     public record ClearResult(ClearStatus status, int removed, int preserved) { }
 }

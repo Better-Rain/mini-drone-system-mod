@@ -51,7 +51,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 生成的可加载 JAR 位于：
 
 ```text
-build/libs/mini-drone-system-mod-0.4.0.jar
+build/libs/mini-drone-system-mod-0.4.1.jar
 ```
 
 ## 安装到 PCL
@@ -167,6 +167,7 @@ world.z = -north
 /minidrone status
 /minidrone origin set
 /minidrone arena create
+/minidrone arena create <x> <y> <z>
 /minidrone arena clear
 ```
 
@@ -174,4 +175,4 @@ world.z = -north
 
 成功的调试命令返回末尾都有 `[COPY]` 按钮。点击后会把完整返回文本复制到系统剪贴板，便于提交调试日志；按钮悬停时会显示复制提示。
 
-`arena create` 会在执行玩家附近最高地表上方建立 13x13 平整训练平台：平滑石平台、红色边界线和四角海晶灯标记。模组会把实际放置的方块保存到世界数据中；`arena clear` 只删除仍保持模组生成状态的已登记方块，玩家替换或破坏过的方块会被保留。训练场已存在时必须先清理，避免误覆盖其他建筑。
+`arena create` 默认在玩家水平视线前方约 10 格、目标柱的无树叶地表建立平台；也可以用 `/minidrone arena create <x> <y> <z>` 指定平台中心方块坐标。它会建立 13x13 平整训练平台：平滑石平台、红色边界线和四角海晶灯标记。模组会把实际放置的方块保存到世界数据中；`arena clear` 只删除仍保持模组生成状态的已登记方块，玩家替换或破坏过的方块会被保留。训练场已存在时必须先清理，避免误覆盖其他建筑。

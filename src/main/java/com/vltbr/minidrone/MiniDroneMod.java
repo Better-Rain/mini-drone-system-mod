@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.HoverEvent;
@@ -39,7 +40,13 @@ public final class MiniDroneMod implements ModInitializer {
                     .then(literal("origin")
                         .then(literal("set").executes(context -> resetOrigin(context.getSource()))))
                     .then(literal("arena")
-                        .then(literal("create").executes(context -> createArena(context.getSource())))
+                        .then(literal("create")
+                            .executes(context -> createArena(context.getSource(), null))
+                            .then(net.minecraft.commands.Commands.argument(
+                                "center", BlockPosArgument.blockPos())
+                                .executes(context -> createArena(
+                                    context.getSource(),
+                                    BlockPosArgument.getBlockPos(context, "center")))))
                         .then(literal("clear").executes(context -> clearArena(context.getSource()))))
             )
         );
@@ -126,7 +133,7 @@ public final class MiniDroneMod implements ModInitializer {
         return result == VirtualDroneManager.OriginResetResult.RESET ? 1 : 0;
     }
 
-    private int createArena(CommandSourceStack source) {
+    private int createArena(CommandSourceStack source, net.minecraft.core.BlockPos requestedCenter) {
         if (trainingArenaController == null) {
             source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
             return 0;
@@ -138,16 +145,19 @@ public final class MiniDroneMod implements ModInitializer {
             source.sendFailure(Component.literal("This command must be run by a player in the Overworld."));
             return 0;
         }
-        var result = trainingArenaController.create(player);
+        var result = trainingArenaController.create(player, requestedCenter);
         switch (result.status()) {
             case CREATED -> source.sendSuccess(() -> copyableMessage(String.format(
-                "Training arena created: placed=%d, skipped=%d", result.placed(), result.skipped())), false);
+                "Training arena created at (%d, %d, %d): placed=%d, skipped=%d",
+                result.centerX(), result.topY(), result.centerZ(), result.placed(), result.skipped())), false);
             case ALREADY_EXISTS -> source.sendFailure(
                 Component.literal("A training arena is already recorded in this world. Clear it first."));
             case WRONG_DIMENSION -> source.sendFailure(
                 Component.literal("The training arena can only be created in the Overworld."));
             case NO_SPACE -> source.sendFailure(
                 Component.literal("No air space was available for the training arena."));
+            case INVALID_POSITION -> source.sendFailure(
+                Component.literal("The training arena center is outside the Overworld build height."));
         }
         return result.status() == TrainingArenaController.CreateStatus.CREATED ? 1 : 0;
     }
