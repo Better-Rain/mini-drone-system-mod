@@ -71,7 +71,11 @@ public final class TrainingArenaController {
         savedData.replaceWith(layout, placed);
         MiniDroneMod.LOGGER.info("Created training arena at ({}, {}, {}) with {} blocks ({} skipped)",
             layout.centerX(), layout.topY(), layout.centerZ(), placed.size(), skipped);
-        return new CreateResult(CreateStatus.CREATED, placed.size(), skipped);
+        // The centre has to travel with the result: the command prints it back to
+        // the operator, and the convenience constructor would leave it as 0,0,0.
+        return new CreateResult(
+            CreateStatus.CREATED, placed.size(), skipped,
+            layout.centerX(), layout.topY(), layout.centerZ());
     }
 
     public ClearResult clear() {
@@ -145,6 +149,10 @@ public final class TrainingArenaController {
     public enum CreateStatus { CREATED, ALREADY_EXISTS, WRONG_DIMENSION, NO_SPACE, INVALID_POSITION }
     public enum ClearStatus { CLEARED, NOT_FOUND }
 
+    /**
+     * {@code centerX/Y/Z} are only meaningful for {@link CreateStatus#CREATED};
+     * the other statuses use the convenience constructor and leave them at 0.
+     */
     public record CreateResult(
         CreateStatus status,
         int placed,
