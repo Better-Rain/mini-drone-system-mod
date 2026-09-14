@@ -165,6 +165,11 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 ## 本地联调
 
 完整的分步操作、每步的期望结果和故障对照在 [`docs/live-run-guide.md`](docs/live-run-guide.md)；下面是骨架。
+上机前建议先跑一次只读预检，它会拦住"构建了新版本却忘了重装、实例里还是旧 JAR"这类白白浪费一次上机的问题：
+
+```powershell
+.\scripts\preflight.ps1
+```
 
 1. 启动隔离主项目后端：
 
