@@ -4,6 +4,7 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.ArrayList;
@@ -14,13 +15,32 @@ import java.util.List;
 public final class TrainingArenaSavedData extends SavedData {
     public static final String DATA_ID = "mini_drone_training_arena";
 
+    /**
+     * The data-fix type handed to {@link Factory}.
+     *
+     * <p>It must not be null. Loading an existing file calls
+     * {@code DataFixTypes.update(...)} on this value before the deserializer
+     * runs, so a null type throws inside the load path - where the exception is
+     * caught and only logged. The factory then builds a fresh default and the
+     * recorded arena looks like it was never saved, while its blocks are still
+     * in the world and {@code arena clear} can no longer remove them.
+     *
+     * <p>{@code LEVEL} is the conventional choice for third-party schemas: the
+     * fixers only run when the stored DataVersion differs from the running one.
+     */
+    public static final DataFixTypes DATA_FIX_TYPE = DataFixTypes.LEVEL;
+
     private int centerX;
     private int topY;
     private int centerZ;
     private final List<PlacedBlock> placedBlocks = new ArrayList<>();
 
     public static Factory<TrainingArenaSavedData> factory() {
-        return new Factory<>(TrainingArenaSavedData::new, TrainingArenaSavedData::load, null);
+        return new Factory<>(
+            TrainingArenaSavedData::new,
+            TrainingArenaSavedData::load,
+            DATA_FIX_TYPE
+        );
     }
 
     public static TrainingArenaSavedData load(CompoundTag tag, HolderLookup.Provider registries) {

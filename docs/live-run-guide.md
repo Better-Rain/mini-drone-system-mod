@@ -162,6 +162,7 @@ NED→世界坐标映射与文档一致、降落并上锁、断开触发转发�
 | 点了「解锁」再点「起飞」后卡在 `awaiting_origin` | 后端的起飞序列要求飞行器在确认 Home/Global Origin 之前保持**未解锁**（`awaiting_origin` 阶段发现已解锁会以 `origin_setup_armed_unexpectedly` 失败）。直接用「起飞」一次走完 GUIDED→ARM→TAKEOFF 即可 |
 | 断开链路时 `mocap.forwarding_hold_failed` | 模组没有应答 `VLT_RELAY_HOLD_FORWARDING_V1`（§4.1） |
 | 虚拟飞机对 PVA 没反应 | 该帧 `type_mask` 是否是"全忽略"；模组逐位解析，见 §6.1 |
+| 日志出现 `Error loading saved data: mini_drone_virtual_mocap_settings`（或 `..._training_arena`） | 用的是修复前的 JAR：`mocap enable` 会在重进世界后失效、训练场登记会在重进后丢失（方块还在，但 `arena clear` 清不掉）。重新构建并安装模组；磁盘上的旧存档能被修复后的版本正常读回 |
 
 ## 6. 关停
 
