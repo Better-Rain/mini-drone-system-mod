@@ -38,6 +38,23 @@ Electron 前端 <-> WebSocket <-> 同一个 C++ backend
 
 主项目默认的真实 MAVLink backend 端口可能是 `14540` 或其他运行时值。模组的 `mini_drone.mavlink.remote_port` 必须与正在使用的隔离 backend 监听端口一致，不能凭默认值猜测。
 
+### 2.1 身份必须两侧一致（`expected_drone_id`）
+
+backend 只在自身 `expected_drone_id` **非空**时才做过滤，比较方式是**文本逐字比较**：
+非字符串广告值会先被序列化成文本（整数 `54` → `"54"`），再与配置值比较。因此
+
+- 模组默认广告字符串 `minecraft_drone_01`（`mini_drone.mocap.expected_drone_id` 可改）；
+- 隔离脚本默认给 backend 传同一个值，两侧开箱即一致；
+- **不等于**"MAVLink system ID 自动匹配"：如果 backend 配的是 `minecraft_drone_01` 而模组广告 `54`，
+  该信标会被**静默丢弃**（backend 不报错，只表现为"未收到信标"）；
+- 若希望 backend 配 `--mavlink-mocap-expected-drone-id=54`，模组侧需同时用
+  `-Dmini_drone.mocap.expected_drone_id=54`；
+- 若希望两侧都不过滤，把 backend 的 `expected_drone_id` 留空即可：`minecraft_drone_01`
+  推不出 `ipNN` 后缀，推断结果本来就是空。
+
+排障时可用 `/minidrone link status`（`mocap_expected_id=`）和 `/minidrone mocap status`
+（`advertised_id=`）读取模组实际广告值。
+
 ## 3. JVM 参数
 
 虚拟动捕接口默认关闭。普通使用不需要修改 JVM 参数；进入世界后执行：
@@ -59,6 +76,7 @@ Electron 前端 <-> WebSocket <-> 同一个 C++ backend
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `mini_drone.mocap.enabled` | `false` | 启动时强制启用健康信标和控制监听；游戏内停用只对本次运行生效 |
+| `mini_drone.mocap.expected_drone_id` | `minecraft_drone_01` | 健康信标里广告的身份；必须与 backend 的 `--mavlink-mocap-expected-drone-id` 逐字一致（见 §2.1） |
 | `mini_drone.mocap.health_port` | `18151` | backend 健康监听端口 |
 | `mini_drone.mocap.control_port` | `18152` | 模组控制监听端口 |
 | `mini_drone.mavlink.remote_host` | `127.0.0.1` | backend MAVLink 地址 |
@@ -139,7 +157,7 @@ VLT_RELAY_RECONNECT_V1
   "fusion_mode": "flight_controller_roll_pitch_external_nav_position_yaw",
   "roll_pitch_source": "flight_controller",
   "yaw_source": "motion_capture_external_nav",
-  "expected_drone_id": 54,
+  "expected_drone_id": "minecraft_drone_01",
   "tracking_age_ms": 0.0,
   "forward_rate_hz": 20.0,
   "orientation_held": false,
@@ -155,7 +173,10 @@ VLT_RELAY_RECONNECT_V1
 
 - backend 只接受来自回环地址的健康信标。
 - `healthy=true` 且 `safety_latched=false` 才表示可用源。
-- 如果 backend 的 MAVLink adapter 配置了 `expected_drone_id`，消息中的 `expected_drone_id` 必须是相同字符串，或者是相同的 MAVLink system ID 整数。当前模组使用 `54`，对应 system ID `54`。
+- 如果 backend 的 MAVLink adapter 配置了 `expected_drone_id`，模组广告的值必须与其**逐字相同**。
+  backend 做的是文本比较：非字符串广告值先被转成文本（`54` → `"54"`）再比较，因此
+  "整数的 MAVLink system ID" 只有在该配置值本身就是 `"54"` 时才匹配，见 §2.1。
+  模组默认广告 `minecraft_drone_01`，可用 `mini_drone.mocap.expected_drone_id` 覆盖。
 - 主项目当前支持的融合契约是：
   `fusion_mode="flight_controller_roll_pitch_external_nav_position_yaw"`；
   或旧兼容形式 `position_only=true` 且 `attitude_source="flight_controller"`。
@@ -183,7 +204,7 @@ VLT_RELAY_RECONNECT_V1
 - `GUIDED` 模式切换；
 - Arm/Disarm；
 - Takeoff/Land；
-- `SET_POSITION_TARGET_LOCAL_NED` 位置目标；
+- `SET_POSITION_TARGET_LOCAL_NED` 的**全部 `type_mask` 组合**（见 §6.1）；
 - 参数读取和消息请求；
 - Home/Global Origin 查询。
 
@@ -198,6 +219,39 @@ Minecraft world.z = -north
 ```
 
 除非同步修改 backend 配置和测试，不要改变 system ID、component ID、MAVLink v1 CRC extra 或 payload 字段顺序。
+
+### 6.1 PVA 设定点（`set_pva_target`）的 `type_mask`
+
+主项目的 PVA 是同一时刻唯一的连续控制通道，它下发的是 `SET_POSITION_TARGET_LOCAL_NED`（消息 84，
+`MAV_FRAME_LOCAL_NED = 1`）。`type_mask` 中**置位的位表示"忽略该通道"**，因此同一帧可以是：
+
+| 提供字段 | `type_mask` |
+| --- | ---: |
+| 仅位置 | `0x0DF8` (3576) |
+| 位置 + 速度 | `0x0DC0` (3520) |
+| 位置 + 速度 + 加速度 | `0x0C00` (3072) |
+| 仅速度 | `0x0DC7` (3527) |
+| 位置 z + 速度 x/y/z | `0x0DC3` (3523) |
+| 保持位置，只转偏航（忽略 `yaw_rate`） | `0x0800` (2048) |
+| 仅偏航 | `0x09FF` (2559) |
+| 全字段 | `0x0000` (0) |
+
+模组必须**逐位**解析，不能按整掩码白名单匹配：只接受一两种掩码会让其余帧被静默丢弃，
+表现为"主项目发了指令、虚拟飞机毫无反应"。
+
+模组侧的语义与包络见 `README.md` 的"虚拟飞控包络与设定点语义"：每个设定点替换上一帧，
+未被命令的轴保持（不再平移）；位置轴用限速跟踪，速度和加速度作为前馈；偏航按 `yaw_rate`
+前馈限速转向。位置跟踪是开关式而非比例控制，所以不要用虚拟源的跟踪精度外推真机。
+
+### 6.2 位置类命令的准入时间
+
+后端在会话建立后会按 300 ms 间隔排空一份参数清单（`EK3_SRC1_*`、`GUID*`、`WPNAV_*`、电池参数等），
+并用车辆回传的 `PARAM_VALUE` 判定"飞控是否在融合外部导航"（`EK3_SRC1_POSXY/POSZ/YAW == 6`）。
+在此之前，`external_nav_horizontal_fusion_unstable` 会拒绝**所有**位置类命令，包括 `set_pva_target`。
+
+实测：使用模组的身份、心跳节奏、`PARAM_VALUE` 应答表和健康信标，后端在会话建立后约 **6 秒**内
+完成该清单并开始放行 PVA 帧。排障时不要把这 6 秒的拒绝当作链路故障；`/minidrone link status`
+显示 `backend_fresh=true` 只说明遥测往返正常。
 
 ## 7. 发现流程和“在线”条件
 
@@ -271,12 +325,14 @@ mavlink.mocap_health.listener_ready
 
 | 现象 | 优先检查 |
 | --- | --- |
-| 前端候选“未响应” | JVM 是否包含 `mini_drone.mocap.enabled=true`；模组 JAR 是否为最新；`18152` 是否被其他进程占用 |
+| 前端候选“未响应” | 世界内是否执行过 `/minidrone mocap enable`；模组 JAR 是否为最新；`18152` 是否被其他进程占用 |
 | `18152` 在线但健康状态没有更新 | `18151` 是否与 backend adapter 配置一致；模组是否持续发送 `mocap_relay_health_v1` |
-| 有健康信标但被忽略 | `schema` 错误；发送端不是回环地址；`expected_drone_id` 与 adapter 配置不匹配 |
+| 有健康信标但被静默忽略 | `schema` 错误；发送端不是回环地址；**`expected_drone_id` 不是逐字相同**（§2.1）——这是最容易误判为"没在发"的一类 |
 | 模组 `/minidrone link status` 的 `backend_fresh=false` | MAVLink remote host/port 错误；隔离 backend 未启动；指向了错误的生产 backend |
 | 位置正常但姿态不对 | 先检查 MAVLink `ATTITUDE` 消息 ID 30 和四元数/欧拉角转换；健康 JSON 不负责覆盖前端姿态 |
 | 位置命令被拒绝 | 健康信标过期、`healthy=false`、`safety_latched=true`、融合契约字段缺失或 EKF 状态不满足 |
+| 命令被拒 `external_nav_horizontal_fusion_unstable`，其余都正常 | 后端还没收齐 `EK3_SRC1_*` 参数（会话建立后约 6 秒）——确认模组在响应 `PARAM_REQUEST_READ`，见 §6.2 |
+| PVA 下发但虚拟飞机不动 | 检查该帧的 `type_mask` 是否只用了被支持的通道；模组逐位解析，但"全忽略"的帧会被拒绝（见 §6.1） |
 
 ## 10. 修改边界
 

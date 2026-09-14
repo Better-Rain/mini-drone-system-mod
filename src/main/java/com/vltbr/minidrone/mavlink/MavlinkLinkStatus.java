@@ -16,6 +16,7 @@ public record MavlinkLinkStatus(
     int lastInboundMessageId,
     String lastInboundEndpoint,
     boolean mocapHealthEnabled,
+    String mocapExpectedDroneId,
     int mocapControlPort,
     boolean mocapControlBound
 ) {

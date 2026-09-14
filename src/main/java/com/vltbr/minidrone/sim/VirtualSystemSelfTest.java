@@ -21,6 +21,8 @@ public final class VirtualSystemSelfTest {
         runner.check("guided arm gate", VirtualSystemSelfTest::guidedArmGate);
         runner.check("takeoff reaches altitude", VirtualSystemSelfTest::takeoffReachesAltitude);
         runner.check("waypoint respects speed limit", VirtualSystemSelfTest::waypointRespectsSpeedLimit);
+        runner.check("PVA velocity channel", VirtualSystemSelfTest::pvaVelocityChannel);
+        runner.check("PVA yaw channel", VirtualSystemSelfTest::pvaYawChannel);
         runner.check("landing disarms at ground", VirtualSystemSelfTest::landingDisarmsAtGround);
         runner.check("safe reset clears local position", VirtualSystemSelfTest::safeResetClearsLocalPosition);
         runner.check("heartbeat codec round trip", VirtualSystemSelfTest::heartbeatCodecRoundTrip);
@@ -63,6 +65,33 @@ public final class VirtualSystemSelfTest {
         near(reached.northM(), 2.0, 0.0001, "waypoint north");
         near(reached.eastM(), 1.0, 0.0001, "waypoint east");
         near(reached.downM(), -1.0, 0.0001, "waypoint altitude");
+    }
+
+    // The backend's PVA setpoints reach the flight model as commanded channels, so
+    // the check has to prove a non-position channel actually drives the vehicle.
+    private static void pvaVelocityChannel() {
+        VirtualDroneState drone = airborne();
+        require(
+            drone.setLocalSetpoint(new LocalSetpoint(
+                velocityAxis(0.5), LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(),
+                false, 0.0, false, 0.0)),
+            "velocity-only setpoint was rejected");
+        tick(drone, 20);
+        VirtualDroneSnapshot snapshot = drone.snapshot();
+        near(snapshot.velocityNorthMps(), 0.5, 0.0001, "commanded velocity");
+        require(snapshot.northM() > 0.4, "velocity channel did not move the drone");
+    }
+
+    private static void pvaYawChannel() {
+        VirtualDroneState drone = airborne();
+        require(
+            drone.setLocalSetpoint(new LocalSetpoint(
+                LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(),
+                true, 0.5, false, 0.0)),
+            "yaw-only setpoint was rejected");
+        tick(drone, 15);
+        near(drone.snapshot().yawRad(), 0.5, 0.0001, "commanded yaw");
+        near(drone.snapshot().yawRateRadS(), 0.0, 0.0001, "settled yaw rate");
     }
 
     private static void landingDisarmsAtGround() {
@@ -134,6 +163,18 @@ public final class VirtualSystemSelfTest {
         require(drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED), "GUIDED mode was rejected");
         require(drone.setArmed(true), "arming in GUIDED was rejected");
         return drone;
+    }
+
+    private static VirtualDroneState airborne() {
+        VirtualDroneState drone = armedDrone();
+        require(drone.takeoff(1.0), "takeoff command was rejected");
+        tick(drone, 25);
+        require(drone.snapshot().airborne(), "drone did not become airborne");
+        return drone;
+    }
+
+    private static LocalSetpoint.Axis velocityAxis(double velocity) {
+        return new LocalSetpoint.Axis(false, 0.0, true, velocity, false, 0.0);
     }
 
     private static void tick(VirtualDroneState drone, int count) {

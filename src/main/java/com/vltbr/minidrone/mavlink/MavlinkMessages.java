@@ -212,7 +212,9 @@ public final class MavlinkMessages {
         float velocityNorth = data.getFloat();
         float velocityEast = data.getFloat();
         float velocityDown = data.getFloat();
-        data.position(data.position() + 12);
+        float accelerationNorth = data.getFloat();
+        float accelerationEast = data.getFloat();
+        float accelerationDown = data.getFloat();
         float yaw = data.getFloat();
         float yawRate = data.getFloat();
         int typeMask = Short.toUnsignedInt(data.getShort());
@@ -227,6 +229,9 @@ public final class MavlinkMessages {
             velocityNorth,
             velocityEast,
             velocityDown,
+            accelerationNorth,
+            accelerationEast,
+            accelerationDown,
             yaw,
             yawRate,
             typeMask,
@@ -278,11 +283,66 @@ public final class MavlinkMessages {
         float velocityNorth,
         float velocityEast,
         float velocityDown,
+        float accelerationNorth,
+        float accelerationEast,
+        float accelerationDown,
         float yaw,
         float yawRate,
         int typeMask,
         int targetSystem,
         int targetComponent,
         int coordinateFrame
-    ) {}
+    ) {
+        public boolean commandsNorth() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_POSITION_X);
+        }
+
+        public boolean commandsEast() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_POSITION_Y);
+        }
+
+        public boolean commandsDown() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_POSITION_Z);
+        }
+
+        public boolean commandsVelocityNorth() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_VELOCITY_X);
+        }
+
+        public boolean commandsVelocityEast() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_VELOCITY_Y);
+        }
+
+        public boolean commandsVelocityDown() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_VELOCITY_Z);
+        }
+
+        public boolean commandsAccelerationNorth() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_ACCELERATION_X);
+        }
+
+        public boolean commandsAccelerationEast() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_ACCELERATION_Y);
+        }
+
+        public boolean commandsAccelerationDown() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_ACCELERATION_Z);
+        }
+
+        public boolean commandsYaw() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_YAW);
+        }
+
+        public boolean commandsYawRate() {
+            return commandsPosition(MavlinkProtocol.POSITION_TARGET_IGNORE_YAW_RATE);
+        }
+
+        public boolean commandsAnyChannel() {
+            return MavlinkProtocol.commandsAnyChannel(typeMask);
+        }
+
+        private boolean commandsPosition(int ignoreBit) {
+            return MavlinkProtocol.commandsPosition(typeMask, ignoreBit);
+        }
+    }
 }

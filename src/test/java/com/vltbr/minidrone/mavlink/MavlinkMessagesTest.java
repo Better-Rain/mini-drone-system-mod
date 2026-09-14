@@ -103,6 +103,122 @@ class MavlinkMessagesTest {
         assertEquals(2, air[1]);
     }
 
+    // The backend's PVA setpoints use several type masks. Matching whole masks
+    // silently dropped most of them, so every channel is read from its own bit.
+    @Test
+    void readsTheCommandedChannelsOfEveryBackendTypeMask() {
+        MavlinkMessages.PositionTargetLocalNed positionOnly = decodeMask(0x0DF8);
+        assertTrue(positionOnly.commandsNorth());
+        assertTrue(positionOnly.commandsEast());
+        assertTrue(positionOnly.commandsDown());
+        assertFalse(positionOnly.commandsVelocityNorth());
+        assertFalse(positionOnly.commandsAccelerationNorth());
+        assertFalse(positionOnly.commandsYaw());
+        assertTrue(positionOnly.commandsAnyChannel());
+
+        MavlinkMessages.PositionTargetLocalNed positionVelocity = decodeMask(0x0DC0);
+        assertTrue(positionVelocity.commandsNorth());
+        assertTrue(positionVelocity.commandsVelocityEast());
+        assertFalse(positionVelocity.commandsAccelerationEast());
+        assertFalse(positionVelocity.commandsYaw());
+
+        MavlinkMessages.PositionTargetLocalNed full = decodeMask(0x0C00);
+        assertTrue(full.commandsNorth());
+        assertTrue(full.commandsVelocityDown());
+        assertTrue(full.commandsAccelerationNorth());
+        assertFalse(full.commandsYaw());
+        assertFalse(full.commandsYawRate());
+
+        MavlinkMessages.PositionTargetLocalNed velocityOnly = decodeMask(0x0DC7);
+        assertFalse(velocityOnly.commandsNorth());
+        assertFalse(velocityOnly.commandsEast());
+        assertFalse(velocityOnly.commandsDown());
+        assertTrue(velocityOnly.commandsVelocityNorth());
+        assertTrue(velocityOnly.commandsVelocityEast());
+        assertTrue(velocityOnly.commandsVelocityDown());
+
+        // Velocity on the horizontal axes while the vertical position is kept.
+        MavlinkMessages.PositionTargetLocalNed mixed = decodeMask(0x0DC3);
+        assertFalse(mixed.commandsNorth());
+        assertFalse(mixed.commandsEast());
+        assertTrue(mixed.commandsDown());
+        assertTrue(mixed.commandsVelocityNorth());
+        assertTrue(mixed.commandsVelocityEast());
+        assertFalse(mixed.commandsYaw());
+
+        // 0x0800 only clears the yaw_rate bit, so position, velocity,
+        // acceleration and yaw are all commanded while yaw_rate is not.
+        MavlinkMessages.PositionTargetLocalNed yawWithEverythingElse = decodeMask(0x0800);
+        assertTrue(yawWithEverythingElse.commandsNorth());
+        assertTrue(yawWithEverythingElse.commandsVelocityNorth());
+        assertTrue(yawWithEverythingElse.commandsAccelerationNorth());
+        assertTrue(yawWithEverythingElse.commandsYaw());
+        assertFalse(yawWithEverythingElse.commandsYawRate());
+
+        // Yaw on its own: every channel except yaw and yaw_rate is ignored.
+        MavlinkMessages.PositionTargetLocalNed yawOnly = decodeMask(0x09FF);
+        assertFalse(yawOnly.commandsNorth());
+        assertFalse(yawOnly.commandsVelocityNorth());
+        assertFalse(yawOnly.commandsAccelerationNorth());
+        assertFalse(yawOnly.commandsDown());
+        assertTrue(yawOnly.commandsYaw());
+        assertFalse(yawOnly.commandsYawRate());
+        assertTrue(yawOnly.commandsAnyChannel());
+
+        MavlinkMessages.PositionTargetLocalNed everything = decodeMask(0x0000);
+        assertTrue(everything.commandsNorth());
+        assertTrue(everything.commandsVelocityNorth());
+        assertTrue(everything.commandsAccelerationNorth());
+        assertTrue(everything.commandsYaw());
+        assertTrue(everything.commandsYawRate());
+
+        MavlinkMessages.PositionTargetLocalNed nothing = decodeMask(0xFFFF);
+        assertFalse(nothing.commandsAnyChannel());
+    }
+
+    @Test
+    void decodesTheAccelerationAndYawChannelsInsteadOfSkippingThem() {
+        ByteBuffer payload = MavlinkPayloads.writer(53);
+        payload.putInt(0);
+        for (int index = 0; index < 3; index++) {
+            payload.putFloat(0.0f);
+        }
+        for (int index = 0; index < 3; index++) {
+            payload.putFloat(0.0f);
+        }
+        payload.putFloat(0.4f);
+        payload.putFloat(-0.5f);
+        payload.putFloat(0.6f);
+        payload.putFloat(0.7f);
+        payload.putFloat(-0.8f);
+        payload.putShort((short) 0x0C00);
+        payload.put((byte) 54);
+        payload.put((byte) 1);
+        payload.put((byte) MavlinkProtocol.MAV_FRAME_LOCAL_NED);
+
+        MavlinkMessages.PositionTargetLocalNed decoded =
+            MavlinkMessages.decodePositionTargetLocalNed(payload.array());
+
+        assertEquals(0.4f, decoded.accelerationNorth());
+        assertEquals(-0.5f, decoded.accelerationEast());
+        assertEquals(0.6f, decoded.accelerationDown());
+        assertEquals(0.7f, decoded.yaw());
+        assertEquals(-0.8f, decoded.yawRate());
+    }
+
+    private static MavlinkMessages.PositionTargetLocalNed decodeMask(int typeMask) {
+        ByteBuffer payload = MavlinkPayloads.writer(53);
+        payload.putInt(0);
+        for (int index = 0; index < 11; index++) {
+            payload.putFloat(0.0f);
+        }
+        payload.putShort((short) typeMask);
+        payload.put((byte) 54);
+        payload.put((byte) 1);
+        payload.put((byte) MavlinkProtocol.MAV_FRAME_LOCAL_NED);
+        return MavlinkMessages.decodePositionTargetLocalNed(payload.array());
+    }
+
     private static VirtualDroneSnapshot snapshot(
         boolean armed,
         boolean guided,

@@ -46,6 +46,39 @@ public final class MavlinkProtocol {
     public static final int POSITION_TARGET_TYPE_MASK_POSITION_ONLY = 0x0DF8;
     public static final int POSITION_TARGET_TYPE_MASK_POSITION_VELOCITY = 0x0DC0;
 
+    // SET_POSITION_TARGET_LOCAL_NED type_mask bits: a set bit means "ignore this
+    // channel", so the commanded channels of a frame are the cleared bits. The
+    // backend's PVA setpoints use several combinations (position only,
+    // position+velocity+acceleration, velocity only, yaw only), so each channel
+    // has to be read from its own bit instead of matching whole masks.
+    public static final int POSITION_TARGET_IGNORE_POSITION_X = 0x0001;
+    public static final int POSITION_TARGET_IGNORE_POSITION_Y = 0x0002;
+    public static final int POSITION_TARGET_IGNORE_POSITION_Z = 0x0004;
+    public static final int POSITION_TARGET_IGNORE_VELOCITY_X = 0x0008;
+    public static final int POSITION_TARGET_IGNORE_VELOCITY_Y = 0x0010;
+    public static final int POSITION_TARGET_IGNORE_VELOCITY_Z = 0x0020;
+    public static final int POSITION_TARGET_IGNORE_ACCELERATION_X = 0x0040;
+    public static final int POSITION_TARGET_IGNORE_ACCELERATION_Y = 0x0080;
+    public static final int POSITION_TARGET_IGNORE_ACCELERATION_Z = 0x0100;
+    public static final int POSITION_TARGET_IGNORE_YAW = 0x0400;
+    public static final int POSITION_TARGET_IGNORE_YAW_RATE = 0x0800;
+
+    public static boolean commandsPosition(int typeMask, int ignoreBit) {
+        return (typeMask & ignoreBit) == 0;
+    }
+
+    public static boolean commandsAnyChannel(int typeMask) {
+        int commanded = ~typeMask
+            & (POSITION_TARGET_IGNORE_POSITION_X | POSITION_TARGET_IGNORE_POSITION_Y
+                | POSITION_TARGET_IGNORE_POSITION_Z
+                | POSITION_TARGET_IGNORE_VELOCITY_X | POSITION_TARGET_IGNORE_VELOCITY_Y
+                | POSITION_TARGET_IGNORE_VELOCITY_Z
+                | POSITION_TARGET_IGNORE_ACCELERATION_X | POSITION_TARGET_IGNORE_ACCELERATION_Y
+                | POSITION_TARGET_IGNORE_ACCELERATION_Z
+                | POSITION_TARGET_IGNORE_YAW | POSITION_TARGET_IGNORE_YAW_RATE);
+        return commanded != 0;
+    }
+
     private MavlinkProtocol() {}
 
     public static int crcExtra(int messageId) {

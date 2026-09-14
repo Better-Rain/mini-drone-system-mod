@@ -1,6 +1,7 @@
 package com.vltbr.minidrone.mavlink;
 
 import com.vltbr.minidrone.MiniDroneMod;
+import com.vltbr.minidrone.sim.LocalSetpoint;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
 import net.minecraft.server.MinecraftServer;
@@ -170,25 +171,72 @@ public final class VirtualAutopilot {
             MavlinkMessages.decodePositionTargetLocalNed(payload);
         if (!targetsThisVehicle(target.targetSystem(), target.targetComponent())
             || target.coordinateFrame() != MavlinkProtocol.MAV_FRAME_LOCAL_NED
-            || target.typeMask() != MavlinkProtocol.POSITION_TARGET_TYPE_MASK_POSITION_ONLY
-                && target.typeMask() != MavlinkProtocol.POSITION_TARGET_TYPE_MASK_POSITION_VELOCITY) {
+            || !target.commandsAnyChannel()) {
             return;
         }
-        if (target.typeMask() == MavlinkProtocol.POSITION_TARGET_TYPE_MASK_POSITION_VELOCITY
-            && (!Float.isFinite(target.velocityNorth())
-                || !Float.isFinite(target.velocityEast())
-                || !Float.isFinite(target.velocityDown()))) {
-            return;
-        }
+        // The backend's PVA setpoints use many type_mask combinations, so every
+        // commanded channel is mapped instead of matching whole masks: a dropped
+        // frame leaves the operator with a virtual vehicle that simply ignores
+        // the command.
+        LocalSetpoint setpoint = toLocalSetpoint(target);
         server.execute(() -> {
-            boolean accepted = droneManager.setPositionTarget(target.north(), target.east(), target.down());
+            boolean accepted = droneManager.setLocalSetpoint(setpoint);
             if (!accepted) {
                 MiniDroneMod.LOGGER.debug(
-                    "Rejected local NED target [{}, {}, {}] for {}",
-                    target.north(), target.east(), target.down(), droneManager.snapshot().droneId()
+                    "Rejected local NED setpoint {} for {}",
+                    setpoint,
+                    droneManager.snapshot().droneId()
                 );
             }
         });
+    }
+
+    static LocalSetpoint toLocalSetpoint(MavlinkMessages.PositionTargetLocalNed target) {
+        return new LocalSetpoint(
+            axis(
+                target.commandsNorth(),
+                target.north(),
+                target.commandsVelocityNorth(),
+                target.velocityNorth(),
+                target.commandsAccelerationNorth(),
+                target.accelerationNorth()
+            ),
+            axis(
+                target.commandsEast(),
+                target.east(),
+                target.commandsVelocityEast(),
+                target.velocityEast(),
+                target.commandsAccelerationEast(),
+                target.accelerationEast()
+            ),
+            axis(
+                target.commandsDown(),
+                target.down(),
+                target.commandsVelocityDown(),
+                target.velocityDown(),
+                target.commandsAccelerationDown(),
+                target.accelerationDown()
+            ),
+            target.commandsYaw(),
+            target.yaw(),
+            target.commandsYawRate(),
+            target.yawRate()
+        );
+    }
+
+    private static LocalSetpoint.Axis axis(
+        boolean positionSet,
+        double position,
+        boolean velocitySet,
+        double velocity,
+        boolean accelerationSet,
+        double acceleration
+    ) {
+        return new LocalSetpoint.Axis(
+            positionSet, position,
+            velocitySet, velocity,
+            accelerationSet, acceleration
+        );
     }
 
     private void sendRequestedMessage(int messageId) {

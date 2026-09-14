@@ -4,11 +4,11 @@ import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MavlinkTransportMocapHealthTest {
-    @Test
-    void emitsTheCompleteBackendHealthContractInLocalNedOrder() {
-        VirtualDroneSnapshot state = new VirtualDroneSnapshot(
+    private static VirtualDroneSnapshot snapshot() {
+        return new VirtualDroneSnapshot(
             54, 1, "minecraft_drone_01", 1234L,
             true, true, true, false, false, 4,
             1.25, -2.5, 0.75,
@@ -17,7 +17,10 @@ class MavlinkTransportMocapHealthTest {
             0.004, -0.005, 0.006,
             87.5
         );
+    }
 
+    @Test
+    void emitsTheCompleteBackendHealthContractInLocalNedOrder() {
         assertEquals(
             "{\"schema\":\"mocap_relay_health_v1\","
                 + "\"source_mode\":\"minecraft_virtual\","
@@ -27,12 +30,44 @@ class MavlinkTransportMocapHealthTest {
                 + "\"fusion_mode\":\"flight_controller_roll_pitch_external_nav_position_yaw\","
                 + "\"roll_pitch_source\":\"flight_controller\","
                 + "\"yaw_source\":\"motion_capture_external_nav\","
-                + "\"expected_drone_id\":54,\"tracking_age_ms\":0.0,"
+                + "\"expected_drone_id\":\"minecraft_drone_01\",\"tracking_age_ms\":0.0,"
                 + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
                 + "\"tracking_holdover_active\":false,"
                 + "\"last_forwarded_pose\":{\"position_m\":[1.250000,-2.500000,0.750000],"
                 + "\"roll_pitch_yaw_rad\":[0.040000,-0.050000,0.060000]}}",
-            MavlinkTransport.mocapHealthPayload(state, 1787600000000000L)
+            MavlinkTransport.mocapHealthPayload(
+                snapshot(),
+                1787600000000000L,
+                "minecraft_drone_01"
+            )
         );
+    }
+
+    // The backend compares the advertised value against its configured text
+    // verbatim, so a numeric configuration has to be advertised as text too.
+    @Test
+    void advertisesAConfiguredNumericIdentityAsText() {
+        String payload = MavlinkTransport.mocapHealthPayload(snapshot(), 0L, "54");
+        assertTrue(payload.contains("\"expected_drone_id\":\"54\","));
+    }
+
+    @Test
+    void escapesIdsThatWouldOtherwiseBreakTheJsonDocument() {
+        assertEquals("\"a\\\"b\\\\c\"", MavlinkTransport.jsonString("a\"b\\c"));
+        assertEquals("\"line\\nbreak\"", MavlinkTransport.jsonString("line\nbreak"));
+        assertEquals("\"\\u0007bell\"", MavlinkTransport.jsonString("\u0007bell"));
+    }
+
+    @Test
+    void fallsBackToTheBuiltInIdentityWhenNothingUsableIsConfigured() {
+        assertEquals(
+            "minecraft_drone_01",
+            MavlinkTransport.resolveMocapExpectedDroneId(null)
+        );
+        assertEquals(
+            "minecraft_drone_01",
+            MavlinkTransport.resolveMocapExpectedDroneId("   ")
+        );
+        assertEquals("54", MavlinkTransport.resolveMocapExpectedDroneId(" 54 "));
     }
 }

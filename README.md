@@ -23,10 +23,11 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 
 - MAVLink v1 编解码、CRC 校验和主项目黄金帧测试
 - GUIDED、Arm/Disarm、Takeoff、Land 和本地 NED 位置目标
+- 主项目 PVA 设定点（`set_pva_target`）的全部通道：位置、速度、加速度、偏航和偏航角速度，按 `type_mask` 逐位解析
 - `HEARTBEAT`、`ATTITUDE`、`LOCAL_POSITION_NED`、`SYS_STATUS`
 - `EKF_STATUS_REPORT`、`EXTENDED_SYS_STATE`
 - `COMMAND_ACK`、参数读取、Home 和 Global Origin 遥测
-- 可选的主项目动捕健康信标
+- 可选的主项目动捕健康信标和源控制端点
 - Minecraft 服务端无人机实体与 Local NED 坐标同步
 - 客户端四旋翼模型、旋翼动画、状态灯和名称状态显示
 - 首位进入主世界的玩家前方自动建立虚拟飞行原点
@@ -40,6 +41,20 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 - 训练场 3x3 降落标记和 `/minidrone arena status` 中心坐标查询
 
 障碍物、自动降落判定和更完整的姿态控制尚未实现，将在后续阶段加入。
+
+## 虚拟飞控包络与设定点语义
+
+虚拟飞控把每个 PVA 设定点当作**完整的一帧**：`type_mask` 里置位的通道表示"忽略"，未置位的通道才是本帧命令。一帧只命令 `yaw` 时，水平轴就没有命令，飞行器保持当前位置不再平移。
+
+| 项 | 包络 |
+| --- | --- |
+| 水平速度 | 1.4 m/s（圆周包络，不是每轴单独限速） |
+| 垂直速度 | 上行 0.8 m/s、下行 0.6 m/s |
+| 加速度 | 水平 2.0 m/s²、垂直 1.0 m/s² |
+| 偏航角速度 | 1.5 rad/s |
+| 水平位置范围 | 距原点 120 m |
+
+未被位置通道使用的速度/加速度会被馈送到该轴的命令里。位置跟踪本身是**限速开关式**的（不是比例控制器），所以"固定位置目标 + 恒定速度前馈"会产生几厘米量级的来回摆动；主项目真机上同一用法会产生约 20 cm 超调（见 `docs/pva-setpoint-command.md` §4.4.3）。**这是模型简化，不是真机的定量等价**，不要把虚拟源的跟踪精度外推到真机。
 
 ## 构建
 
@@ -97,6 +112,7 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 | 配置 | 默认值 |
 | --- | --- |
 | 虚拟无人机 ID | `minecraft_drone_01` |
+| 动捕 `expected_drone_id`（模组广告） | `minecraft_drone_01` |
 | MAVLink system/component | `54 / 1` |
 | 模组本地 UDP 端口 | 动态分配 |
 | 后端 MAVLink 监听 | `127.0.0.1:14561` |
@@ -160,6 +176,7 @@ mavlink.mocap_health.listener_ready
 | `mini_drone.mavlink.remote_port` | `14561` | 后端 MAVLink 端口 |
 | `mini_drone.mavlink.local_port` | `0` | 模组绑定端口，`0` 表示动态分配 |
 | `mini_drone.mocap.enabled` | `false` | 启动时强制启用虚拟动捕健康信标和源控制服务；游戏内停用只对本次运行生效 |
+| `mini_drone.mocap.expected_drone_id` | `minecraft_drone_01` | 健康信标广告的身份；backend 侧 `--mavlink-mocap-expected-drone-id` 必须与它逐字一致，否则信标被静默丢弃 |
 | `mini_drone.mocap.health_port` | `18151` | 健康信标目标端口 |
 | `mini_drone.mocap.control_port` | `18152` | 本机动捕源控制监听端口 |
 
@@ -202,7 +219,7 @@ world.z = -north
 
 中心选择工具列入后续阶段：计划增加一个专用选择器，右键方块记录场地中心，再通过 `arena create selected` 生成，减少手工输入坐标；当前版本的绝对坐标命令仍是确定性调试入口。
 
-`selftest` 不会改变当前世界中的无人机、场地或主项目连接。它在内存中运行 8 项闭环检查：GUIDED/ARM 门禁、起飞、限速航点、降落解锁、Local NED 重置、MAVLink 心跳编解码、坐标变换和训练场布局。训练场存档往返由世界加载/保存路径负责。开发阶段可直接运行 `\.\gradlew.bat closedLoopTest`，进入游戏后只需执行一次 `/minidrone selftest` 即可确认客户端加载了同一套逻辑。
+`selftest` 不会改变当前世界中的无人机、场地或主项目连接。它在内存中运行 10 项闭环检查：GUIDED/ARM 门禁、起飞、限速航点、PVA 速度通道、PVA 偏航通道、降落解锁、Local NED 重置、MAVLink 心跳编解码、坐标变换和训练场布局。训练场存档往返由世界加载/保存路径负责。开发阶段可直接运行 `\.\gradlew.bat closedLoopTest`，进入游戏后只需执行一次 `/minidrone selftest` 即可确认客户端加载了同一套逻辑。
 
 一次启动的建议验证顺序：
 

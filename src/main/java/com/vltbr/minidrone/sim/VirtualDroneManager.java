@@ -58,7 +58,11 @@ public final class VirtualDroneManager {
     }
 
     public boolean setPositionTarget(double northM, double eastM, double downM) {
-        boolean accepted = primaryDrone.setPositionTarget(northM, eastM, downM);
+        return setLocalSetpoint(LocalSetpoint.positionOnly(northM, eastM, downM));
+    }
+
+    public boolean setLocalSetpoint(LocalSetpoint setpoint) {
+        boolean accepted = primaryDrone.setLocalSetpoint(setpoint);
         publish();
         return accepted;
     }

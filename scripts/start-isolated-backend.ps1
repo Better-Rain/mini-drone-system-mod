@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
     [string]$MainProjectRoot = "C:\Users\VLT_BR\Projects\mini-drone-system",
-    [string]$BackendExecutable = "backend\build-official-c\drone_backend.exe",
+    [string]$BackendExecutable = "backend\build\drone_backend.exe",
     [int]$WebSocketPort = 18082,
     [int]$MavlinkPort = 14561,
     [int]$MocapHealthPort = 18151,
-    [int]$MocapControlPort = 18152
+    [int]$MocapControlPort = 18152,
+    [string]$MocapExpectedDroneId = "minecraft_drone_01"
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +74,10 @@ Write-Host "WebSocket : ws://127.0.0.1:$WebSocketPort"
 Write-Host "MAVLink  : udpin://127.0.0.1:$MavlinkPort"
 Write-Host "Vehicle  : minecraft_drone_01 (system 54, component 1)"
 Write-Host "Mocap health: 127.0.0.1:$MocapHealthPort"
+Write-Host "Mocap expected drone id: $MocapExpectedDroneId"
+Write-Host "The mod must advertise the same id; override it with"
+Write-Host "  -Dmini_drone.mocap.expected_drone_id=$MocapExpectedDroneId"
+Write-Host "when its built-in default differs from this value."
 
 & $launcher `
     -BackendExecutable $backendPath `
@@ -91,6 +96,6 @@ Write-Host "Mocap health: 127.0.0.1:$MocapHealthPort"
     -MocapHealthPort $MocapHealthPort `
     -MocapControlHost "127.0.0.1" `
     -MocapControlPort $MocapControlPort `
-    -MocapExpectedDroneId "minecraft_drone_01"
+    -MocapExpectedDroneId $MocapExpectedDroneId
 
 exit $LASTEXITCODE

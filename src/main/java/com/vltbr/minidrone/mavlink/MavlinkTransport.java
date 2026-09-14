@@ -24,6 +24,10 @@ public final class MavlinkTransport {
     private static final int DEFAULT_LOCAL_PORT = 0;
     private static final int DEFAULT_MOCAP_HEALTH_PORT = 18151;
     private static final int DEFAULT_MOCAP_CONTROL_PORT = 18152;
+    // The backend stores this as text and compares it with the advertised value
+    // verbatim, so the two sides must agree exactly. The isolated profile binds
+    // the slot id, not the MAVLink system id, which is why this is the default.
+    private static final String DEFAULT_MOCAP_EXPECTED_DRONE_ID = "minecraft_drone_01";
     private static final long FAST_TELEMETRY_PERIOD_MS = 50L;
     private static final long EXTENDED_STATE_PERIOD_MS = 200L;
     private static final long SLOW_TELEMETRY_PERIOD_MS = 500L;
@@ -41,6 +45,7 @@ public final class MavlinkTransport {
     private final AtomicBoolean mocapHealthEnabled = new AtomicBoolean(false);
     private final int mocapHealthPort;
     private final int mocapControlPort;
+    private final String mocapExpectedDroneId;
     private final MocapControlServer mocapControlServer;
     private final VirtualAutopilot autopilot;
     private final AtomicLong receivedPackets = new AtomicLong();
@@ -75,6 +80,9 @@ public final class MavlinkTransport {
         mocapControlPort = Integer.getInteger(
             "mini_drone.mocap.control_port",
             DEFAULT_MOCAP_CONTROL_PORT
+        );
+        mocapExpectedDroneId = resolveMocapExpectedDroneId(
+            System.getProperty("mini_drone.mocap.expected_drone_id")
         );
         mocapControlServer = new MocapControlServer(mocapControlPort);
         autopilot = new VirtualAutopilot(server, droneManager, outbound::add);
@@ -136,6 +144,7 @@ public final class MavlinkTransport {
             lastInboundMessageId,
             lastInboundEndpoint,
             mocapHealthEnabled.get(),
+            mocapExpectedDroneId,
             mocapControlPort,
             mocapControlServer.isBound()
         );
@@ -294,7 +303,11 @@ public final class MavlinkTransport {
 
     private void sendMocapHealth(DatagramSocket socket, VirtualDroneSnapshot state)
         throws IOException {
-        String payload = mocapHealthPayload(state, System.currentTimeMillis() * 1000L);
+        String payload = mocapHealthPayload(
+            state,
+            System.currentTimeMillis() * 1000L,
+            mocapExpectedDroneId
+        );
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(
             bytes,
@@ -305,7 +318,19 @@ public final class MavlinkTransport {
         healthBeaconsSent.incrementAndGet();
     }
 
-    static String mocapHealthPayload(VirtualDroneSnapshot state, long wallTimeUnixUs) {
+    static String resolveMocapExpectedDroneId(String configured) {
+        if (configured == null) {
+            return DEFAULT_MOCAP_EXPECTED_DRONE_ID;
+        }
+        String trimmed = configured.trim();
+        return trimmed.isEmpty() ? DEFAULT_MOCAP_EXPECTED_DRONE_ID : trimmed;
+    }
+
+    static String mocapHealthPayload(
+        VirtualDroneSnapshot state,
+        long wallTimeUnixUs,
+        String expectedDroneId
+    ) {
         return String.format(
             Locale.ROOT,
             "{\"schema\":\"mocap_relay_health_v1\","
@@ -316,13 +341,13 @@ public final class MavlinkTransport {
                 + "\"fusion_mode\":\"flight_controller_roll_pitch_external_nav_position_yaw\","
                 + "\"roll_pitch_source\":\"flight_controller\","
                 + "\"yaw_source\":\"motion_capture_external_nav\","
-                + "\"expected_drone_id\":%d,\"tracking_age_ms\":0.0,"
+                + "\"expected_drone_id\":%s,\"tracking_age_ms\":0.0,"
             + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
             + "\"tracking_holdover_active\":false,"
             + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
             wallTimeUnixUs,
-            state.systemId(),
+            jsonString(expectedDroneId),
             state.northM(),
             state.eastM(),
             state.downM(),
@@ -330,6 +355,32 @@ public final class MavlinkTransport {
             state.pitchRad(),
             state.yawRad()
         );
+    }
+
+    // The backend compares the advertised id against its configured value as
+    // text, so it has to be a JSON string and it has to be escaped.
+    static String jsonString(String value) {
+        StringBuilder escaped = new StringBuilder(value.length() + 2);
+        escaped.append('"');
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            switch (character) {
+                case '"' -> escaped.append("\\\"");
+                case '\\' -> escaped.append("\\\\");
+                case '\n' -> escaped.append("\\n");
+                case '\r' -> escaped.append("\\r");
+                case '\t' -> escaped.append("\\t");
+                default -> {
+                    if (character < 0x20) {
+                        escaped.append(String.format(Locale.ROOT, "\\u%04x", (int) character));
+                    } else {
+                        escaped.append(character);
+                    }
+                }
+            }
+        }
+        escaped.append('"');
+        return escaped.toString();
     }
 
     private static InetAddress ipv4Loopback() {
