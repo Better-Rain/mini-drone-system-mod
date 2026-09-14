@@ -18,10 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class MavlinkTransport {
+    private static final InetAddress IPV4_LOOPBACK = ipv4Loopback();
     private static final String DEFAULT_HOST = "127.0.0.1";
     private static final int DEFAULT_REMOTE_PORT = 14561;
     private static final int DEFAULT_LOCAL_PORT = 0;
-    private static final int DEFAULT_MOCAP_HEALTH_PORT = 15151;
+    private static final int DEFAULT_MOCAP_HEALTH_PORT = 18151;
+    private static final int DEFAULT_MOCAP_CONTROL_PORT = 18152;
     private static final long FAST_TELEMETRY_PERIOD_MS = 50L;
     private static final long EXTENDED_STATE_PERIOD_MS = 200L;
     private static final long SLOW_TELEMETRY_PERIOD_MS = 500L;
@@ -30,13 +32,16 @@ public final class MavlinkTransport {
 
     private final VirtualDroneManager droneManager;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean mocapControlRunning = new AtomicBoolean(false);
     private final ConcurrentLinkedQueue<MavlinkOutboundMessage> outbound =
         new ConcurrentLinkedQueue<>();
     private final int remotePort;
     private final int localPort;
     private final InetAddress remoteAddress;
-    private final boolean mocapHealthEnabled;
+    private final AtomicBoolean mocapHealthEnabled = new AtomicBoolean(false);
     private final int mocapHealthPort;
+    private final int mocapControlPort;
+    private final MocapControlServer mocapControlServer;
     private final VirtualAutopilot autopilot;
     private final AtomicLong receivedPackets = new AtomicLong();
     private final AtomicLong receivedFrames = new AtomicLong();
@@ -49,6 +54,7 @@ public final class MavlinkTransport {
     private volatile int lastInboundMessageId = -1;
     private volatile String lastInboundEndpoint = "-";
     private Thread ioThread;
+    private Thread mocapControlThread;
     private int sequence;
 
     public MavlinkTransport(MinecraftServer server, VirtualDroneManager droneManager) {
@@ -61,11 +67,16 @@ public final class MavlinkTransport {
         }
         remotePort = Integer.getInteger("mini_drone.mavlink.remote_port", DEFAULT_REMOTE_PORT);
         localPort = Integer.getInteger("mini_drone.mavlink.local_port", DEFAULT_LOCAL_PORT);
-        mocapHealthEnabled = Boolean.getBoolean("mini_drone.mocap.enabled");
+        mocapHealthEnabled.set(Boolean.getBoolean("mini_drone.mocap.enabled"));
         mocapHealthPort = Integer.getInteger(
             "mini_drone.mocap.health_port",
             DEFAULT_MOCAP_HEALTH_PORT
         );
+        mocapControlPort = Integer.getInteger(
+            "mini_drone.mocap.control_port",
+            DEFAULT_MOCAP_CONTROL_PORT
+        );
+        mocapControlServer = new MocapControlServer(mocapControlPort);
         autopilot = new VirtualAutopilot(server, droneManager, outbound::add);
     }
 
@@ -73,13 +84,26 @@ public final class MavlinkTransport {
         if (!running.compareAndSet(false, true)) {
             return;
         }
+        startMocapControlIfNeeded();
         ioThread = new Thread(this::runIoLoop, "mini-drone-mavlink");
         ioThread.setDaemon(true);
         ioThread.start();
     }
 
+    public synchronized void setMocapEnabled(boolean enabled) {
+        boolean changed = mocapHealthEnabled.getAndSet(enabled) != enabled;
+        if (enabled) {
+            startMocapControlIfNeeded();
+        } else if (changed || mocapControlRunning.get()) {
+            stopMocapControl();
+        }
+    }
+
     public void stop() {
-        if (!running.compareAndSet(true, false)) {
+        boolean mavlinkWasRunning = running.getAndSet(false);
+        boolean mocapControlWasRunning = mocapControlRunning.get();
+        mocapHealthEnabled.set(false);
+        if (!mavlinkWasRunning && !mocapControlWasRunning) {
             return;
         }
         socketBound = false;
@@ -93,6 +117,7 @@ public final class MavlinkTransport {
             }
             ioThread = null;
         }
+        stopMocapControl();
     }
 
     public MavlinkLinkStatus status() {
@@ -110,7 +135,9 @@ public final class MavlinkTransport {
             lastOutboundAtMs,
             lastInboundMessageId,
             lastInboundEndpoint,
-            mocapHealthEnabled
+            mocapHealthEnabled.get(),
+            mocapControlPort,
+            mocapControlServer.isBound()
         );
     }
 
@@ -121,7 +148,7 @@ public final class MavlinkTransport {
         long nextHeartbeatAt = 0L;
         long nextMocapHealthAt = 0L;
         try (DatagramSocket socket = new DatagramSocket(null)) {
-            socket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), localPort));
+            socket.bind(new InetSocketAddress(IPV4_LOOPBACK, localPort));
             socket.setSoTimeout(20);
             boundLocalPort = socket.getLocalPort();
             socketBound = true;
@@ -131,7 +158,7 @@ public final class MavlinkTransport {
                 remoteAddress.getHostAddress(),
                 remotePort
             );
-            if (mocapHealthEnabled) {
+            if (mocapHealthEnabled.get()) {
                 MiniDroneMod.LOGGER.warn(
                     "Virtual motion-capture health beacon enabled for 127.0.0.1:{}; use only with the isolated Minecraft backend profile",
                     mocapHealthPort
@@ -171,7 +198,7 @@ public final class MavlinkTransport {
                     send(socket, MavlinkProtocol.HEARTBEAT, MavlinkMessages.heartbeat(state));
                     nextHeartbeatAt = now + HEARTBEAT_PERIOD_MS;
                 }
-                if (mocapHealthEnabled && now >= nextMocapHealthAt) {
+                if (mocapHealthEnabled.get() && now >= nextMocapHealthAt) {
                     sendMocapHealth(socket, state);
                     nextMocapHealthAt = now + MOCAP_HEALTH_PERIOD_MS;
                 }
@@ -209,6 +236,48 @@ public final class MavlinkTransport {
         }
     }
 
+    private void runMocapControlLoop() {
+        try {
+            mocapControlServer.run(mocapControlRunning, port -> MiniDroneMod.LOGGER.info(
+                "Virtual motion-capture control bound to 127.0.0.1:{}",
+                port
+            ));
+        } catch (IOException exception) {
+            if (mocapControlRunning.get()) {
+                MiniDroneMod.LOGGER.error(
+                    "Virtual motion-capture control endpoint stopped unexpectedly",
+                    exception
+                );
+            }
+        } finally {
+            mocapControlRunning.set(false);
+        }
+    }
+
+    private synchronized void startMocapControlIfNeeded() {
+        if (!running.get() || !mocapHealthEnabled.get()
+            || !mocapControlRunning.compareAndSet(false, true)) {
+            return;
+        }
+        mocapControlThread = new Thread(this::runMocapControlLoop, "mini-drone-mocap-control");
+        mocapControlThread.setDaemon(true);
+        mocapControlThread.start();
+    }
+
+    private synchronized void stopMocapControl() {
+        mocapControlRunning.set(false);
+        mocapControlServer.close();
+        if (mocapControlThread != null) {
+            mocapControlThread.interrupt();
+            try {
+                mocapControlThread.join(1500L);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+            mocapControlThread = null;
+        }
+    }
+
     private void send(DatagramSocket socket, int messageId, byte[] payload) throws IOException {
         VirtualDroneSnapshot state = droneManager.snapshot();
         byte[] frame = MavlinkV1Codec.encode(
@@ -225,7 +294,19 @@ public final class MavlinkTransport {
 
     private void sendMocapHealth(DatagramSocket socket, VirtualDroneSnapshot state)
         throws IOException {
-        String payload = String.format(
+        String payload = mocapHealthPayload(state, System.currentTimeMillis() * 1000L);
+        byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+        socket.send(new DatagramPacket(
+            bytes,
+            bytes.length,
+            IPV4_LOOPBACK,
+            mocapHealthPort
+        ));
+        healthBeaconsSent.incrementAndGet();
+    }
+
+    static String mocapHealthPayload(VirtualDroneSnapshot state, long wallTimeUnixUs) {
+        return String.format(
             Locale.ROOT,
             "{\"schema\":\"mocap_relay_health_v1\","
                 + "\"source_mode\":\"minecraft_virtual\","
@@ -236,11 +317,11 @@ public final class MavlinkTransport {
                 + "\"roll_pitch_source\":\"flight_controller\","
                 + "\"yaw_source\":\"motion_capture_external_nav\","
                 + "\"expected_drone_id\":%d,\"tracking_age_ms\":0.0,"
-                + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
-                + "\"tracking_holdover_active\":false,"
-                + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
+            + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
+            + "\"tracking_holdover_active\":false,"
+            + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
-            System.currentTimeMillis() * 1000L,
+            wallTimeUnixUs,
             state.systemId(),
             state.northM(),
             state.eastM(),
@@ -249,13 +330,13 @@ public final class MavlinkTransport {
             state.pitchRad(),
             state.yawRad()
         );
-        byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
-        socket.send(new DatagramPacket(
-            bytes,
-            bytes.length,
-            InetAddress.getLoopbackAddress(),
-            mocapHealthPort
-        ));
-        healthBeaconsSent.incrementAndGet();
+    }
+
+    private static InetAddress ipv4Loopback() {
+        try {
+            return InetAddress.getByAddress(new byte[] {127, 0, 0, 1});
+        } catch (java.net.UnknownHostException exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
     }
 }

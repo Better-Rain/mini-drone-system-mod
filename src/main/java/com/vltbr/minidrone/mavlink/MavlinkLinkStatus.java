@@ -15,7 +15,9 @@ public record MavlinkLinkStatus(
     long lastOutboundAtMs,
     int lastInboundMessageId,
     String lastInboundEndpoint,
-    boolean mocapHealthEnabled
+    boolean mocapHealthEnabled,
+    int mocapControlPort,
+    boolean mocapControlBound
 ) {
     private static final long BACKEND_FRESHNESS_MS = 3_000L;
 

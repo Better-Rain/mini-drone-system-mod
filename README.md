@@ -76,7 +76,17 @@ C:\Users\VLT_BR\Saved Games\Minecraft\.minecraft\versions\Mini Drone System 1.21
 
 更新模组前应先正常退出 Minecraft，然后重新执行安装脚本。脚本只替换该实例中名称匹配 `mini-drone-system-mod-*.jar` 的旧版本，不会修改其他模组。
 
-PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕仍默认关闭；完整联调时只在这个实例的 JVM 参数中加入：
+PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕默认关闭。进入世界后可使用聊天命令完成设置，不需要修改启动器：
+
+```text
+/minidrone mocap status
+/minidrone mocap enable
+/minidrone mocap disable
+```
+
+`status` 返回的 `[ENABLE]`、`[DISABLE]` 按钮可以直接点击。设置保存在当前世界；重新进入该世界后仍然有效。启用后再让主项目执行“重新扫描”，即可发现 `minecraft_virtual_mocap`。
+
+开发者也可以在启动时使用 JVM 参数强制打开（这适合隔离联调，不是普通用户的必要步骤）：
 
 ```text
 -Dmini_drone.mocap.enabled=true
@@ -91,19 +101,22 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 | 模组本地 UDP 端口 | 动态分配 |
 | 后端 MAVLink 监听 | `127.0.0.1:14561` |
 | 后端 WebSocket（建议隔离值） | `127.0.0.1:18082` |
-| 动捕健康监听 | `127.0.0.1:15151` |
+| 动捕健康监听 | `127.0.0.1:18151` |
+| 动捕源控制 | `127.0.0.1:18152` |
 
 模组从动态本地端口向 `14561` 发送心跳，后端从收到的心跳学习返回端点并把命令发回模组。
 
 ## 安全隔离
 
-虚拟动捕健康信标默认关闭。仅在确认使用隔离后端时显式启用：
+虚拟动捕健康信标和独立源控制服务默认关闭。推荐进入世界后使用 `/minidrone mocap enable`；仅在需要启动即开启或进行自动化联调时使用 JVM 覆盖：
 
 ```powershell
-.\gradlew.bat runClient -Dmini_drone.mocap.enabled=true
+ .\gradlew.bat runClient
 ```
 
-不要把该开关用于连接真实无人机或真实动捕的后端。附带的隔离启动脚本只使用回环地址，并在 `14561`、`15151` 或隔离 WebSocket 端口已占用时停止，不会关闭已有进程。
+不要把该开关用于连接真实无人机或真实动捕的后端。附带的隔离启动脚本只使用回环地址，并在 `14561`、`18151` 或隔离 WebSocket 端口已占用时停止，不会关闭已有进程。
+
+开启后，`127.0.0.1:18152` 会响应 `VLT_RELAY_STATUS_V1` 和 `VLT_RELAY_RECONNECT_V1`。这是动捕软件源自己的在线探测，不依赖后端是否收到虚拟无人机 MAVLink 心跳。
 
 ## 本地联调
 
@@ -117,8 +130,10 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
-.\gradlew.bat runClient -Dmini_drone.mocap.enabled=true
+.\gradlew.bat runClient
 ```
+
+进入世界后执行 /minidrone mocap enable；自动化联调也可以把 -Dmini_drone.mocap.enabled=true 放回启动命令。
 
 3. 主项目前端使用查询参数连接隔离后端：
 
@@ -144,8 +159,9 @@ mavlink.mocap_health.listener_ready
 | `mini_drone.mavlink.remote_host` | `127.0.0.1` | 后端 MAVLink 地址 |
 | `mini_drone.mavlink.remote_port` | `14561` | 后端 MAVLink 端口 |
 | `mini_drone.mavlink.local_port` | `0` | 模组绑定端口，`0` 表示动态分配 |
-| `mini_drone.mocap.enabled` | `false` | 启用虚拟动捕健康信标 |
-| `mini_drone.mocap.health_port` | `15151` | 健康信标目标端口 |
+| `mini_drone.mocap.enabled` | `false` | 启动时强制启用虚拟动捕健康信标和源控制服务；游戏内停用只对本次运行生效 |
+| `mini_drone.mocap.health_port` | `18151` | 健康信标目标端口 |
+| `mini_drone.mocap.control_port` | `18152` | 本机动捕源控制监听端口 |
 
 通过 Gradle 的 `-Dmini_drone.*` 参数会被转发给 Loom 启动的游戏 JVM。打包后使用其他 Minecraft 启动器时，应在该启动器的 JVM 参数中设置这些属性。
 

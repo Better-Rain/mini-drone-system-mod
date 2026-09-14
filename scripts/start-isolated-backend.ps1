@@ -1,9 +1,11 @@
 [CmdletBinding()]
 param(
     [string]$MainProjectRoot = "C:\Users\VLT_BR\Projects\mini-drone-system",
-    [string]$BackendExecutable = "backend\build-hil\drone_backend.exe",
+    [string]$BackendExecutable = "backend\build-official-c\drone_backend.exe",
     [int]$WebSocketPort = 18082,
-    [int]$MavlinkPort = 14561
+    [int]$MavlinkPort = 14561,
+    [int]$MocapHealthPort = 18151,
+    [int]$MocapControlPort = 18152
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,14 +64,15 @@ if (-not (Test-TcpPortAvailable -Port $WebSocketPort)) {
 if (-not (Test-UdpPortAvailable -Port $MavlinkPort)) {
     throw "Minecraft MAVLink port 127.0.0.1:$MavlinkPort is already in use."
 }
-if (-not (Test-UdpPortAvailable -Port 15151)) {
-    throw "Motion-capture health port 127.0.0.1:15151 is already in use; an existing backend may be active."
+if (-not (Test-UdpPortAvailable -Port $MocapHealthPort)) {
+    throw "Motion-capture health port 127.0.0.1:$MocapHealthPort is already in use; an existing backend may be active."
 }
 
 Write-Host "Starting isolated Minecraft backend"
 Write-Host "WebSocket : ws://127.0.0.1:$WebSocketPort"
 Write-Host "MAVLink  : udpin://127.0.0.1:$MavlinkPort"
 Write-Host "Vehicle  : minecraft_drone_01 (system 54, component 1)"
+Write-Host "Mocap health: 127.0.0.1:$MocapHealthPort"
 
 & $launcher `
     -BackendExecutable $backendPath `
@@ -79,6 +82,15 @@ Write-Host "Vehicle  : minecraft_drone_01 (system 54, component 1)"
     -BindIds "minecraft_drone_01" `
     -WsPort $WebSocketPort `
     -BindAddress "127.0.0.1" `
-    -MavlinkLocalAddress "127.0.0.1"
+    -MavlinkLocalAddress "127.0.0.1" `
+    -MocapMode "virtual" `
+    -MocapProfile "minecraft_virtual_mocap" `
+    -MocapSourceHost "127.0.0.1" `
+    -MocapSourcePort 15150 `
+    -MocapHealthHost "127.0.0.1" `
+    -MocapHealthPort $MocapHealthPort `
+    -MocapControlHost "127.0.0.1" `
+    -MocapControlPort $MocapControlPort `
+    -MocapExpectedDroneId "minecraft_drone_01"
 
 exit $LASTEXITCODE

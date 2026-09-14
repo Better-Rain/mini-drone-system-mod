@@ -6,6 +6,7 @@ import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
 import com.vltbr.minidrone.world.TrainingArenaController;
+import com.vltbr.minidrone.world.VirtualMocapSettingsSavedData;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -15,6 +16,7 @@ import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.HoverEvent;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.ChatFormatting;
@@ -29,6 +31,7 @@ public final class MiniDroneMod implements ModInitializer {
 
     private VirtualDroneManager droneManager;
     private TrainingArenaController trainingArenaController;
+    private VirtualMocapSettingsSavedData mocapSettings;
     private MavlinkTransport mavlinkTransport;
 
     @Override
@@ -41,6 +44,10 @@ public final class MiniDroneMod implements ModInitializer {
                     .then(literal("status").executes(context -> reportStatus(context.getSource())))
                     .then(literal("link")
                         .then(literal("status").executes(context -> reportLinkStatus(context.getSource()))))
+                    .then(literal("mocap")
+                        .then(literal("enable").executes(context -> setMocapEnabled(context.getSource(), true)))
+                        .then(literal("disable").executes(context -> setMocapEnabled(context.getSource(), false)))
+                        .then(literal("status").executes(context -> reportMocapStatus(context.getSource()))))
                     .then(literal("selftest").executes(context -> runSelfTest(context.getSource())))
                     .then(literal("origin")
                         .then(literal("set").executes(context -> resetOrigin(context.getSource()))))
@@ -60,7 +67,14 @@ public final class MiniDroneMod implements ModInitializer {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             droneManager = new VirtualDroneManager(server);
             trainingArenaController = new TrainingArenaController(server);
+            mocapSettings = server.overworld().getDataStorage().computeIfAbsent(
+                VirtualMocapSettingsSavedData.factory(),
+                VirtualMocapSettingsSavedData.DATA_ID
+            );
             mavlinkTransport = new MavlinkTransport(server, droneManager);
+            if (mocapSettings.enabled()) {
+                mavlinkTransport.setMocapEnabled(true);
+            }
             mavlinkTransport.start();
             LOGGER.info("Mini Drone System virtual flight controller started");
         });
@@ -81,6 +95,7 @@ public final class MiniDroneMod implements ModInitializer {
             }
             droneManager = null;
             trainingArenaController = null;
+            mocapSettings = null;
             LOGGER.info("Mini Drone System virtual flight controller stopped");
         });
 
@@ -125,15 +140,64 @@ public final class MiniDroneMod implements ModInitializer {
         String message = String.format(
             "MAVLink link: state=%s, remote=%s:%d, local=127.0.0.1:%d, "
                 + "backend_fresh=%s, rx_packets=%d, rx_frames=%d, tx_frames=%d, "
-                + "last_rx=%s, last_tx=%s, mocap_health=%s",
+                + "last_rx=%s, last_tx=%s, mocap_health=%s, mocap_control=%s",
             status.state(),
             status.remoteHost(), status.remotePort(), status.localPort(),
             status.backendFresh(now), status.receivedPackets(), status.receivedFrames(),
             status.transmittedFrames(), lastRx, lastTx,
-            status.mocapHealthEnabled()
+            status.mocapHealthEnabled(),
+            formatMocapControlStatus(status)
         );
         source.sendSuccess(() -> copyableMessage(message), false);
         return status.state() == MavlinkLinkStatus.LinkState.DOWN ? 0 : 1;
+    }
+
+    private int setMocapEnabled(CommandSourceStack source, boolean enabled) {
+        if (mavlinkTransport == null || mocapSettings == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        mocapSettings.setEnabled(enabled);
+        mavlinkTransport.setMocapEnabled(enabled);
+        String action = enabled ? "enabled" : "disabled";
+        source.sendSuccess(() -> mocapStatusMessage(action), false);
+        return 1;
+    }
+
+    private int reportMocapStatus(CommandSourceStack source) {
+        if (mavlinkTransport == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        MavlinkLinkStatus status = mavlinkTransport.status();
+        source.sendSuccess(() -> mocapStatusMessage(
+            status.mocapHealthEnabled() ? "enabled" : "disabled"), false);
+        return 1;
+    }
+
+    private Component mocapStatusMessage(String action) {
+        MavlinkLinkStatus status = mavlinkTransport.status();
+        String state = status.mocapHealthEnabled() ? "enabled" : "disabled";
+        MutableComponent message = Component.literal(
+            "Virtual mocap: " + state + " (control " + formatMocapControlStatus(status) + ") "
+                + "[" + action + "]"
+        );
+        return message
+            .append(Component.literal(" "))
+            .append(commandButton("ENABLE", "/minidrone mocap enable", status.mocapHealthEnabled()))
+            .append(Component.literal(" "))
+            .append(commandButton("DISABLE", "/minidrone mocap disable", !status.mocapHealthEnabled()));
+    }
+
+    private static Component commandButton(String label, String command, boolean selected) {
+        return Component.literal("[" + label + "]")
+            .withStyle(style -> style
+                .withColor(selected ? ChatFormatting.GREEN : ChatFormatting.AQUA)
+                .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command))
+                .withHoverEvent(new HoverEvent(
+                    HoverEvent.Action.SHOW_TEXT,
+                    Component.literal("Run " + command)
+                )));
     }
 
     private int resetOrigin(CommandSourceStack source) {
@@ -249,5 +313,14 @@ public final class MiniDroneMod implements ModInitializer {
                         HoverEvent.Action.SHOW_TEXT,
                         Component.literal("Copy to clipboard")
                     ))));
+    }
+
+    private static String formatMocapControlStatus(MavlinkLinkStatus status) {
+        if (!status.mocapHealthEnabled()) {
+            return "disabled";
+        }
+        return status.mocapControlBound()
+            ? "listening:127.0.0.1:" + status.mocapControlPort()
+            : "not-listening:127.0.0.1:" + status.mocapControlPort();
     }
 }
