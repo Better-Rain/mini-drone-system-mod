@@ -56,7 +56,7 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 
 未被位置通道使用的速度/加速度会被馈送到该轴的命令里。位置跟踪本身是**限速开关式**的（不是比例控制器），所以"固定位置目标 + 恒定速度前馈"会产生几厘米量级的来回摆动；主项目真机上同一用法会产生约 20 cm 超调（见 `docs/pva-setpoint-command.md` §4.4.3）。**这是模型简化，不是真机的定量等价**，不要把虚拟源的跟踪精度外推到真机。
 
-包络也决定了健康信标的周期：主项目用"最新信标位姿 vs 最新飞控位置"做交叉一致性判据（限 0.10 m），而信标之间的位姿是冻结的，所以周期乘以水平限速必须留在 0.10 m 以内——1.4 m/s × 50 ms = 0.07 m 刚好安全，250 ms 则会到 0.35 m。详见 `docs/main-backend-compatibility.md` §5。
+包络也决定了健康信标的周期：主项目用"最新信标位姿 vs 最新飞控位置"做交叉一致性判据（限 0.10 m），而信标之间的位姿是冻结的，所以周期乘以水平限速必须留在 0.10 m 以内——1.4 m/s × 50 ms = 0.07 m，实测最坏 0.0896 m，250 ms 则实测 0.2408 m 并开始间歇拒绝。详见 `docs/main-backend-compatibility.md` §5，可用 `node scripts/verify-contract.mjs --move-mps=1.4` 复现。
 
 ## 构建
 
@@ -140,9 +140,11 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 
 不要把该开关用于连接真实无人机或真实动捕的后端。附带的隔离启动脚本只使用回环地址，并在 `14561`、`18151` 或隔离 WebSocket 端口已占用时停止，不会关闭已有进程。
 
-开启后，`127.0.0.1:18152` 会响应 `VLT_RELAY_STATUS_V1` 和 `VLT_RELAY_RECONNECT_V1`。这是动捕软件源自己的在线探测，不依赖后端是否收到虚拟无人机 MAVLink 心跳。
+开启后，`127.0.0.1:18152` 会响应 `VLT_RELAY_STATUS_V1`、`VLT_RELAY_RECONNECT_V1`，以及后端在断开链路时发的 `VLT_RELAY_HOLD_FORWARDING_V1` / `VLT_RELAY_RESUME_FORWARDING_V1`。这是动捕软件源自己的在线探测，不依赖后端是否收到虚拟无人机 MAVLink 心跳。
 
 ## 本地联调
+
+完整的分步操作、每步的期望结果和故障对照在 [`docs/live-run-guide.md`](docs/live-run-guide.md)；下面是骨架。
 
 1. 启动隔离主项目后端：
 
@@ -150,14 +152,14 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 .\scripts\start-isolated-backend.ps1
 ```
 
-2. 在另一个终端启动 Minecraft 开发客户端和虚拟动捕：
+2. 在另一个终端启动 Minecraft 开发客户端：
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 .\gradlew.bat runClient
 ```
 
-进入世界后执行 /minidrone mocap enable；自动化联调也可以把 -Dmini_drone.mocap.enabled=true 放回启动命令。
+进入世界后执行 `/minidrone mocap enable`（按世界保存）；自动化联调也可以把 `-Dmini_drone.mocap.enabled=true` 放回启动命令。
 
 3. 主项目前端使用查询参数连接隔离后端：
 
@@ -165,7 +167,7 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 ?backendWs=ws://127.0.0.1:18082
 ```
 
-应先观察以下事件，再发送控制命令：
+4. 在"动捕源"里选中 `minecraft_virtual_mocap`。应先观察以下事件，再发送控制命令：
 
 ```text
 mavlink.link.up
@@ -175,6 +177,19 @@ mavlink.mocap_health.listener_ready
 ```
 
 随后按 `GUIDED -> ARM -> TAKEOFF -> LAND` 的顺序验证。任何真实飞行操作都不属于本项目的自动测试范围。
+位置类命令在建链后的前约 6 秒会被后端拒绝（它在排空参数清单），属正常现象，见联调手册 §3。
+
+### 不启动 Minecraft 也能验证契约
+
+契约的模组侧可以单独跑——脚本扮演虚拟飞机和虚拟动捕源，端口与节奏与模组一致：
+
+```powershell
+node .\scripts\verify-contract.mjs
+node .\scripts\verify-contract.mjs --move-mps=1.4   # 加上"飞行中"的一致性检查
+```
+
+共 8 项检查（控制端点应答、信标被接受、参数答案进入后端融合配置、`set_pva_target` 被放行并变成消息 84、帧内容一致、飞行中交叉一致性、断开触发转发保持、重连触发恢复），全过返回 0。
+它占用模组的那几个端口，所以**先退出 Minecraft 再跑**：backend 只认它学到的那个来源端点，脚本和运行中的模组不能并存。
 
 ## JVM 配置项
 
