@@ -1,5 +1,13 @@
 # 对主项目的需求：动捕源「虚拟 / 现实」可切换
 
+> **状态（2026-09-14）：主项目侧已交付并可实测复验。** 实现与接口清单见主项目
+> `docs/mocap-source-runtime-switch-design.md` §9，联调手册见
+> `docs/minecraft-virtual-mocap-onboarding.md`；主项目提交：`9ac5c39`（R1/R3 + 安全门禁 + 事件）、
+> `0db6384`（R2 飞机链路跟随 + 虚拟链路方向纠正）。
+> 复验结果（本机实测）：主项目自建隔离脚本 43/43、真游戏联调 15/15、本模组 `verify-contract.mjs` 16/16；
+> 另修正一处**模组文档错误**：真机 JAVA 模组不会回复发送方，后端必须监听 `14561`
+> （见 `docs/live-run-guide.md` §2.1c）。
+>
 > 用途：把本文交给主项目那侧的对话，实现完后由模组侧（本项目）按 §5 验收。
 > 结论先行：**现在"在前端选中虚拟源"只改了源管理层的选择，不改命令门禁、也不改飞机链路**，
 > 所以用户会看到"源在线但没有飞机"。需求就是把"选中即生效"补齐。
@@ -68,10 +76,10 @@
 
 | 需要的 | 说明 |
 | --- | --- |
-| 切换命令 | 沿用 `connect_mocap_source` 即可，但要求它**同时**更新门禁与链路；若拆成两条命令，请写明调用顺序 |
-| 事件 | 切换成功/失败各一条，带 `source_mode`、`effective_health_endpoint`、`expected_drone_id`、`previous_*` |
-| 状态字段 | `adapter.status` 里暴露**生效**门的那些值（字段路径按你们的命名，我在脚本里读） |
-| 拒绝状态码 | "切换被安全门禁拒绝"的状态字符串 |
+| 切换命令 | 沿用 `connect_mocap_source` 即可，但要求它**同时**更新门禁、身份与飞机链路；若拆成两条命令，请写明调用顺序。**已交付**：一条命令做完，结果里 `data.aircraft_link` / `data.previous_aircraft_link` 报告链路结果 |
+| 事件 | 切换成功/失败各一条，带 `source_mode`、`effective_health_endpoint`、`expected_drone_id`、`previous_*`。**已交付**：`mocap_source.switch_requested` / `.switched` / `.switch_rejected`（另加 `mocap_source.aircraft_link_connected` / `..._failed` / `..._release_failed`） |
+| 状态字段 | `adapter.status` 里暴露**生效**门的那些值（字段路径按你们的命名，我在脚本里读）。**已交付**：`adapter.transport.mocap.effective_source.*`（含 `listener_state`）+ 并列的 `adapter.selected_mocap_source.*` |
+| 拒绝状态码 | "切换被安全门禁拒绝"的状态字符串。**已交付**：`source_switch_blocked_unsafe`，配 `data.reason` 与 `data.blocking_vehicles[]` |
 
 ## 7. 模组侧保证（不必迁就模组）
 

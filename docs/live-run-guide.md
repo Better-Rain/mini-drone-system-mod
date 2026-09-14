@@ -93,37 +93,45 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 ### 2.1b 打包/正常用户怎么配：改配置文件，不用命令行参数
 
 打包版（`backend-supervisor.js`）本来就是从 `backend-config.json` 生成后端参数的，
-所以**没有"必须敲参数"这回事**——把这几个字段指到模组即可，其余保持现场值：
+所以**没有"必须敲参数"这回事**。虚拟源整条链路（动捕源 + 虚拟飞机）由主项目内置：
+
+- `mode: "virtual"` 一个字段就让 supervisor 生成 `--mocap-source-*`（18151/18152）、
+  `--mocap-expected-drone-id=minecraft_drone_01` 与
+  `--mavlink-endpoints=udpin://127.0.0.1:14561`；
+- 运行期在前端把动捕源从 real 切到 `minecraft_virtual_mocap` 时，后端会**自动补上**
+  该源声明的飞机链路（`udpin://127.0.0.1:14561`，`minecraft_drone_01` / 54 / 1），
+  切回 real 时释放。手动 `connect_mavlink_drone` 不再是必需步骤。
 
 ```json
 {
-  "mode": "real",
-  "drone": {
-    "endpoint": "udpout://127.0.0.1:14601",
-    "bindId": "minecraft_drone_01",
-    "systemId": 54,
-    "componentId": 1
-  },
-  "mocap": {
-    "sourceHost": "127.0.0.1",
-    "sourcePort": 15150,
+  "mode": "virtual",
+  "virtual": {
     "healthPort": 18151,
-    "controlPort": 18152
+    "controlPort": 18152,
+    "expectedDroneId": "minecraft_drone_01",
+    "drone": { "endpoint": "udpin://127.0.0.1:14561", "bindId": "minecraft_drone_01", "systemId": 54 }
   }
 }
 ```
 
-`udpout://127.0.0.1:14601` 能让**后端主动**连到模组那个**固定**本地端口——模组固定绑定 14601 正是为了
-让这件事可配置（动态端口无法写进配置文件）。这条链路已实测通过：后端以 `udpout` 发起、适配器门禁挂在
-模组的健康端口上时，`scripts/verify-contract.mjs` 的 16 项检查全过。
+### 2.1c 方向只有一条：后端必须**监听** 14561（实测纠正）
 
-两点注意（都源于主项目当前的实现，不是模组侧）：
+模组的 `MavlinkTransport` **只向配置好的远端发送**（`mini_drone.mavlink.remote_host/remote_port`，
+默认 `127.0.0.1:14561`），固定绑定本地 `14601`；它**接收**任意来源的帧，但**从不回复发送方**
+（`MavlinkTransport.runIoLoop` 的 `socket.send` 固定用 `remoteAddress:remotePort`）。
 
-- `backend-supervisor.js` 在 `real`/`mocap` 两个模式下**写死了 `--mocap-source-mode=real --mocap-source-profile=real_mocap`**，
-  只是端口取自配置。所以上面这样配能跑通，但前端里那个"已配置源"会顶着 `real_mocap` 的名字，
-  同时内置的 `minecraft_virtual_mocap` 候选也会出现（两者指向同一个模组）。给 supervisor 加一个
-  `virtual` 模式分支（照抄那组 `--mocap-source-mode=virtual …`）就能让名字也正确、一个字段切换。
-- `mode: "mock"` 会走 `--adapter=mock`（假飞机），与模组无关，联调时不要用它。
+所以：
+
+- 正解是后端起 `udpin://127.0.0.1:14561`（本文档 §2.1 与模组 `start-isolated-backend.ps1` 的默认值）；
+- 把链路写成 `udpout://127.0.0.1:14601` 只能把命令送进模组，**永远收不到心跳**，
+  后端因此绑定不了虚拟飞机（实测：`heartbeat_seen=false`，`set_pva_target` 报
+  `The requested MAVLink slot is unknown to this adapter`；同时 `adapter.status` 里
+  `takeoff_stability` 一直是"没有信标"）。
+  本文档早期版本把这一条写成"已实测通过"，那是 `verify-contract.mjs --reply-to-sender`
+  **验证器自己模拟**了回复发送方的行为，真机 JAVA 模组没有这个行为——这正是 §4 开头
+  "别把脚本全绿读成游戏里没问题" 的一个实例。
+- 副作用：游戏一进世界就持续往 `14561` 发遥测。任何监听 `14561` 的后端都会**绑定到游戏里的**
+  虚拟飞机；因此**游戏在运行时跑验证脚本必须换端口**（见 §4 的命令）。
 
 ### 2.2 启动 Minecraft
 
@@ -220,10 +228,14 @@ mocap_expected_id=minecraft_drone_01, mocap_forwarding=forwarding
 并按操作员的顺序走完整个会话：
 
 ```powershell
-# backend 已按 §2.1 启动的前提下
-node .\scripts\verify-contract.mjs
-node .\scripts\verify-contract.mjs --move-mps=1.4      # 加上"飞行中"的一致性检查
+# backend 已按 §2.1 启动的前提下。游戏在运行时必须换端口（§2.1c）：
+node .\scripts\verify-contract.mjs --mavlink-port=18261 --local-port=18262 `
+    --health-port=18251 --control-port=18252
+node .\scripts\verify-contract.mjs --move-mps=1.4                       # 加上"飞行中"的一致性检查
 ```
+
+（隔离 backend 也要跟着换：`.\scripts\start-isolated-backend.ps1 -MavlinkPort 18261 -MocapHealthPort 18251 -MocapControlPort 18252`。
+默认端口 `14561/18151/18152` 只在 Minecraft 已退出时可用。）
 
 16 项检查（前两项是离线自检：脚本重建模组黄金帧并与 `MavlinkV1CodecTest` 的字节逐位比对，
 不过就说明后面都不可信）：发现流程把虚拟源列为可用候选、控制端点应答、健康信标被接受、
