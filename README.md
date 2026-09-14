@@ -99,6 +99,10 @@ build/libs/mini-drone-system-mod-0.7.0.jar
 .\scripts\install-pcl-instance.ps1
 ```
 
+脚本自动取 `build\libs` 下最新的 `mini-drone-system-mod-*.jar`（跳过 `-sources`／`-javadoc`），
+并用 `-ModJar` 可以指定别的构建产物。复制前会校验它确实是可加载的模组 JAR（含 `fabric.mod.json`
+与已编译类），避免把 sources JAR 装进实例、等到启动才发现。
+
 默认安装位置为：
 
 ```text
