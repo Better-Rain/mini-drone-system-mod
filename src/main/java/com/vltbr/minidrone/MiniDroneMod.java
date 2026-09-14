@@ -140,13 +140,16 @@ public final class MiniDroneMod implements ModInitializer {
         String message = String.format(
             "MAVLink link: state=%s, remote=%s:%d, local=127.0.0.1:%d, "
                 + "backend_fresh=%s, rx_packets=%d, rx_frames=%d, tx_frames=%d, "
-                + "last_rx=%s, last_tx=%s, mocap_health=%s, mocap_control=%s, "
-                + "mocap_expected_id=%s, mocap_forwarding=%s",
+                + "last_rx=%s, last_tx=%s, mocap_health=%s, mocap_beacons=%d, "
+                + "mocap_control=%s, mocap_expected_id=%s, mocap_forwarding=%s",
             status.state(),
             status.remoteHost(), status.remotePort(), status.localPort(),
             status.backendFresh(now), status.receivedPackets(), status.receivedFrames(),
             status.transmittedFrames(), lastRx, lastTx,
             status.mocapHealthEnabled(),
+            // The count is what separates "the mod is not sending" from
+            // "the backend is not consuming" when no health state shows up.
+            status.healthBeaconsSent(),
             formatMocapControlStatus(status),
             status.mocapExpectedDroneId(),
             status.forwardingHeld() ? "held" : "forwarding"

@@ -67,12 +67,15 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 
 ```text
 state=CONNECTED, remote=127.0.0.1:14561, local=127.0.0.1:14601,
-backend_fresh=true, ..., mocap_health=true, mocap_control=listening:127.0.0.1:18152,
+backend_fresh=true, ..., mocap_health=true, mocap_beacons=<在涨>,
+mocap_control=listening:127.0.0.1:18152,
 mocap_expected_id=minecraft_drone_01, mocap_forwarding=forwarding
 ```
 
 若 `backend_fresh=false`：backend 没起来，或 `remote` 指错了端口。若 `mocap_control=not-listening`：
-`18152` 被别的进程占用。
+`18152` 被别的进程占用。若前端一直没有健康状态，**再执行一次** `link status` 看 `mocap_beacons`
+有没有在涨：在涨说明模组在发、问题在后端那一侧（`18151` 对不对、`expected_drone_id` 是否逐字一致）；
+不涨说明发送侧就没起来。
 
 ### 2.4 前端连到隔离 backend
 
