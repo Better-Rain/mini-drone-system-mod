@@ -114,16 +114,20 @@ mocap_expected_id=minecraft_drone_01, mocap_forwarding=forwarding
 | backend 起来 | 日志 `mavlink.transport.ready`、`mavlink.mocap_health.listener_ready` |
 | 模组发心跳后 | `mavlink.heartbeat.detected`、`mavlink.binding.established`（slot `minecraft_drone_01`） |
 | 选中动捕源 | `source_connected`，前端候选显示在线 |
-| 位置转发一格 | 先是"等待"，然后"就绪" |
+| 位置转发一格 | 先是"等待"，然后"就绪"（就绪后位置命令与起飞才被放行） |
 | 下发位置/PVA 命令 | 飞控收到 MAVLink 消息 84，虚拟飞机沿限速轨迹移动 |
+| 点「起飞」 | backend 自动走 请求 indoor origin → GUIDED → ARM → NAV_TAKEOFF，虚拟飞机以 0.8 m/s 爬升 |
 
-**前 ~6 秒的位置类命令会被拒，这是设计如此**：backend 建链后按 300 ms 间隔排空一份 69 项的参数清单，
-用车辆回传的 `EK3_SRC1_*` 判定"飞控在融合外部导航"。在此之前所有位置命令返回
-`external_nav_horizontal_fusion_unstable`。看到这个状态先等十秒再判断，不要当成链路故障（见兼容性文档 §6.2）。
+**建链后的前几秒命令会被拒，这是设计如此**：backend 按 300 ms 间隔排空一份 69 项的参数清单，
+用车辆回传的 `EK3_SRC1_*` 判定"飞控在融合外部导航"。在此之前位置命令返回
+`external_nav_horizontal_fusion_unstable`，起飞还会额外因为缺 `EK3_SRC1_POSZ`/`YAW` 返回
+`takeoff_preflight_unstable`。实测清单补齐约 3–4 秒（视链路而定）。看到这些状态先等十秒再判断，
+不要当成链路故障（见兼容性文档 §6.2）。
 
 ## 4. 不用 Minecraft 也能验证这一整套
 
-契约的模组侧可以单独验证——脚本扮演虚拟飞机和虚拟动捕源，跑在与模组完全相同的端口和节奏上：
+契约的模组侧可以单独验证——脚本扮演虚拟飞机和虚拟动捕源，跑在与模组完全相同的端口和节奏上，
+并按操作员的顺序走完整个会话：
 
 ```powershell
 # backend 已按 §2.1 启动的前提下
@@ -131,9 +135,11 @@ node .\scripts\verify-contract.mjs
 node .\scripts\verify-contract.mjs --move-mps=1.4      # 加上"飞行中"的一致性检查
 ```
 
-8 项检查：控制端点应答、健康信标被接受、参数答案进入 backend 融合配置、`set_pva_target` 被放行并
-变成消息 84、帧内容与请求一致、飞行中交叉一致性在窗口内、断开链路触发转发保持、重连触发恢复。
-全过返回 0，任一失败返回 1 并列出失败项。
+11 项检查：控制端点应答、健康信标被接受、参数清单补齐（`EK3_SRC1_POSXY/POSZ/YAW`）、
+`set_flight_mode` 到达、起飞序列（请求 indoor origin → 解锁 → 起飞 → 爬升）、`set_pva_target`
+被放行并变成消息 84、帧内容与请求一致、飞行中交叉一致性在窗口内、降落并上锁、断开触发转发保持、
+重连触发恢复。全过返回 0，任一失败返回 1 并列出失败项；摘要里还带 backend 的最后一条命令回执，
+用于定位卡在哪一阶段。
 
 它占用模组的那几个端口（本地 `14601`、控制 `18152`，并向 `18151` 发信标），所以**验证脚本与正在运行的
 模组不能并存**：先退出 Minecraft 再跑。backend 只认它学到的那个来源端点，`--local-port=0` 只能避免端口
@@ -149,8 +155,10 @@ node .\scripts\verify-contract.mjs --move-mps=1.4      # 加上"飞行中"的一
 | 前端候选"未响应" | 世界内是否执行过 `/minidrone mocap enable`；`18152` 是否被占用 |
 | 候选在线但前端长期没有健康状态 | 两侧 `expected_drone_id` 是否逐字一致（兼容性文档 §2.1） |
 | 命令一直 `session_pending` | 模组这次用了动态本地端口（`14601` 被占用触发了回退）：在前端断开再连接飞机，见 §2.0 |
-| 位置命令一直 `external_nav_horizontal_fusion_unstable` | 刚建链的前 6 秒属正常；持续则看参数清单是否完成（§3） |
+| 位置命令一直 `external_nav_horizontal_fusion_unstable` | 刚建链的前几秒属正常；持续则看参数清单是否完成（§3） |
 | 一飞起来位置命令就被拒 | 信标周期 × 水平限速超过 0.10 m 一致性窗口（§5），确认模组按 50 ms 发信标 |
+| 起飞被拒 `takeoff_preflight_unstable` | 参数清单还没补齐。起飞比位置命令要求更多：除 `EK3_SRC1_POSXY` 外还要 `POSZ` 与 `YAW`，回执里会列出 `estimator_position_z_source_missing` / `estimator_yaw_source_missing` / `external_nav_fusion_unconfirmed`。实测补齐约 3–4 秒，等前端的"位置转发"一格就绪再点起飞 |
+| 点了「解锁」再点「起飞」后卡在 `awaiting_origin` | 后端的起飞序列要求飞行器在确认 Home/Global Origin 之前保持**未解锁**（`awaiting_origin` 阶段发现已解锁会以 `origin_setup_armed_unexpectedly` 失败）。直接用「起飞」一次走完 GUIDED→ARM→TAKEOFF 即可 |
 | 断开链路时 `mocap.forwarding_hold_failed` | 模组没有应答 `VLT_RELAY_HOLD_FORWARDING_V1`（§4.1） |
 | 虚拟飞机对 PVA 没反应 | 该帧 `type_mask` 是否是"全忽略"；模组逐位解析，见 §6.1 |
 

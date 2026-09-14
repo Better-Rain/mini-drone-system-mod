@@ -3,17 +3,22 @@
 // against a running isolated backend, without starting Minecraft.
 //
 // It plays a virtual drone and a virtual motion-capture source on the mod's own
-// ports and asserts, in order:
+// ports and walks the operator's session:
 //
 //   1. the control endpoint answers the discovery probe (connect_mocap_source)
 //   2. the mocap_relay_health_v1 beacon is accepted by the backend
-//   3. the parameter answers reach the backend's fusion configuration
-//   4. a set_pva_target command arrives as MAVLink message 84
-//   5. the emitted frame matches the request
-//   6. while flying, the beacon keeps the estimator/mocap cross-check inside its
+//   3. set_flight_mode reaches the flight controller
+//   4. takeoff arms and reaches the flight controller, and the vehicle climbs
+//   5. the parameter answers reach the backend's fusion configuration
+//   6. a set_pva_target command arrives as MAVLink message 84, matching the request
+//   7. while flying, the beacon keeps the estimator/mocap cross-check inside its
 //      window - this is what a too-slow beacon breaks
-//   7. after landing and disarming, disconnecting the last link holds forwarding
-//   8. reconnecting resumes forwarding
+//   8. land reaches the flight controller, which disarms on the ground
+//   9. disconnecting the last link holds forwarding, and reconnecting resumes it
+//
+// Takeoff is the interesting one: the backend will not start it until it has
+// matched the indoor Home and GPS_GLOBAL_ORIGIN telemetry, so this also covers
+// that exchange.
 //
 // Everything here mirrors a Java source of the mod; each value names its origin
 // so a change there is visibly a change here too.
@@ -108,20 +113,36 @@ const LANDED_STATE_IN_AIR = 2;
 const MESSAGE = {
     HEARTBEAT: 0,
     SYS_STATUS: 1,
+    SET_MODE: 11,
     PARAM_REQUEST_READ: 20,
     PARAM_REQUEST_LIST: 21,
     PARAM_VALUE: 22,
     ATTITUDE: 30,
     LOCAL_POSITION_NED: 32,
+    SET_GPS_GLOBAL_ORIGIN: 48,
+    GPS_GLOBAL_ORIGIN: 49,
     COMMAND_LONG: 76,
     COMMAND_ACK: 77,
     SET_POSITION_TARGET_LOCAL_NED: 84,
     EKF_STATUS_REPORT: 193,
+    HOME_POSITION: 242,
     EXTENDED_SYS_STATE: 245
 };
 const CRC_EXTRA = {
-    0: 50, 1: 124, 22: 220, 30: 39, 32: 185, 77: 143, 193: 71, 245: 130
+    0: 50, 1: 124, 11: 89, 22: 220, 30: 39, 32: 185, 39: 49, 49: 39,
+    77: 143, 104: 16, 193: 71, 242: 104, 245: 130
 };
+// MAV_CMD and ArduCopter custom modes the backend drives the sequence with.
+const MAV_CMD_NAV_LAND = 21;
+const MAV_CMD_NAV_TAKEOFF = 22;
+const MAV_CMD_DO_SET_MODE = 176;
+const MAV_CMD_COMPONENT_ARM_DISARM = 400;
+const MODE_GUIDED = 4;
+// MavlinkMessages indoor origin constants: the backend compares lat/lon to
+// +/-1000 e7 and altitude to +/-250 mm of these.
+const INDOOR_LATITUDE_E7 = 455000000;
+const INDOOR_LONGITUDE_E7 = 1275000000;
+const INDOOR_ALTITUDE_MM = 50000;
 
 function crcAccumulate(byte, crc) {
     let tmp = byte ^ (crc & 0xff);
@@ -189,13 +210,13 @@ function attitudePayload(vehicle) {
     return payload;
 }
 
-function localPositionPayload(north, vehicle) {
+function localPositionPayload(north, vx, vehicle) {
     const payload = Buffer.alloc(28);
     payload.writeUInt32LE(bootTimeMs(), 0);
     payload.writeFloatLE(north, 4);
     payload.writeFloatLE(0, 8);
     payload.writeFloatLE(vehicle.down, 12);
-    payload.writeFloatLE(vehicle.vx, 16);
+    payload.writeFloatLE(vx, 16);
     payload.writeFloatLE(0, 20);
     payload.writeFloatLE(0, 24);
     return payload;
@@ -203,6 +224,36 @@ function localPositionPayload(north, vehicle) {
 
 function extendedSysStatePayload(vehicle) {
     return Buffer.from([0, vehicle.landedState & 0xff]);
+}
+
+// VirtualAutopilot#handleSetGpsGlobalOrigin answers with both origin messages;
+// the backend will not start a takeoff until it has matched them.
+function gpsGlobalOriginPayload() {
+    const payload = Buffer.alloc(20);
+    payload.writeInt32LE(INDOOR_LATITUDE_E7, 0);
+    payload.writeInt32LE(INDOOR_LONGITUDE_E7, 4);
+    payload.writeInt32LE(INDOOR_ALTITUDE_MM, 8);
+    payload.writeBigInt64LE(BigInt(Date.now()) * 1000n, 12);
+    return payload;
+}
+
+function homePositionPayload() {
+    const payload = Buffer.alloc(60);
+    payload.writeInt32LE(INDOOR_LATITUDE_E7, 0);
+    payload.writeInt32LE(INDOOR_LONGITUDE_E7, 4);
+    payload.writeInt32LE(INDOOR_ALTITUDE_MM, 8);
+    payload.writeFloatLE(0, 12);
+    payload.writeFloatLE(0, 16);
+    payload.writeFloatLE(0, 20);
+    payload.writeFloatLE(1, 24);      // q[0]
+    payload.writeFloatLE(0, 28);
+    payload.writeFloatLE(0, 32);
+    payload.writeFloatLE(0, 36);
+    payload.writeFloatLE(0, 40);
+    payload.writeFloatLE(0, 44);
+    payload.writeFloatLE(0, 48);
+    payload.writeBigInt64LE(BigInt(Date.now()) * 1000n, 52);
+    return payload;
 }
 
 function ekfStatusPayload() {
@@ -296,23 +347,59 @@ async function main() {
     };
 
     const startedAtMs = Date.now();
-    const northNow = () => options.moveMps * (Date.now() - startedAtMs) / 1000;
+    // The cruise only starts once the vehicle is airborne: a vehicle that is
+    // already translating cannot pass the takeoff preflight, which is correct
+    // behaviour rather than something the verifier should fight.
+    let motionStartedAtMs = null;
+    const northNow = () => (motionStartedAtMs === null
+        ? 0
+        : options.moveMps * (Date.now() - motionStartedAtMs) / 1000);
+    const currentVelocity = () => (motionStartedAtMs === null ? 0 : options.moveMps);
+    // VirtualDroneState: LANDED -> TAKING_OFF -> FLYING -> LANDING, with the
+    // plant's climb and descent rates.
     const vehicle = {
-        armed: true,
-        guided: true,
-        customMode: 4,                 // ARDUCOPTER_MODE_GUIDED
-        down: -1,
-        landedState: LANDED_STATE_IN_AIR,
+        armed: false,
+        guided: false,
+        customMode: 0,
+        down: 0,
+        landedState: LANDED_STATE_ON_GROUND,
         yaw: 0,
-        vx: options.moveMps
+        vx: 0,
+        climbTargetDown: null,
+        landing: false
+    };
+    const advanceFlight = (deltaMs) => {
+        if (vehicle.climbTargetDown !== null) {
+            vehicle.down = Math.max(
+                vehicle.climbTargetDown, vehicle.down - 0.8 * deltaMs / 1000);
+            vehicle.landedState = 3;                       // MAV_LANDED_STATE_TAKEOFF
+            if (vehicle.down <= vehicle.climbTargetDown + 0.01) {
+                vehicle.down = vehicle.climbTargetDown;
+                vehicle.climbTargetDown = null;
+                vehicle.landedState = LANDED_STATE_IN_AIR;
+            }
+        } else if (vehicle.landing) {
+            vehicle.down = Math.min(0, vehicle.down + 0.6 * deltaMs / 1000);
+            vehicle.landedState = 4;                       // MAV_LANDED_STATE_LANDING
+            if (vehicle.down >= -0.01) {
+                vehicle.down = 0;
+                vehicle.landing = false;
+                vehicle.armed = false;
+                vehicle.landedState = LANDED_STATE_ON_GROUND;
+            }
+        }
     };
 
     let held = false;
     const controlCommands = [];
+    const flightCommands = [];
     let sequence = 0;
     let pvaFrame = null;
     let latestFusion = null;
+    let lastTakeoffOutcome = null;
+    let lastDisconnectOutcome = null;
     let beaconsSent = 0;
+    const commandResults = new Map();
 
     const mavlinkSocket = dgram.createSocket('udp4');
     const healthSocket = dgram.createSocket('udp4');
@@ -356,8 +443,10 @@ async function main() {
     const startTelemetry = () => {
         // FAST_TELEMETRY_PERIOD_MS
         every(50, () => {
+            advanceFlight(50);
             send(MESSAGE.ATTITUDE, attitudePayload(vehicle));
-            send(MESSAGE.LOCAL_POSITION_NED, localPositionPayload(northNow(), vehicle));
+            send(MESSAGE.LOCAL_POSITION_NED,
+                localPositionPayload(northNow(), currentVelocity(), vehicle));
         });
         every(200, () => send(                                    // EXTENDED_STATE_PERIOD_MS
             MESSAGE.EXTENDED_SYS_STATE, extendedSysStatePayload(vehicle)));
@@ -393,19 +482,18 @@ async function main() {
         );
     });
 
-    // VirtualAutopilot: answer what the backend asks for.
+    // VirtualAutopilot: answer what the backend asks for. Replies mirror
+    // VirtualAutopilot#handleCommandLong / handleSetMode / handleSetGpsGlobalOrigin.
     mavlinkSocket.on('message', (message) => {
         for (const frame of scanFrames(message)) {
-            const pva = frame.messageId === MESSAGE.SET_POSITION_TARGET_LOCAL_NED
-                ? parsePositionTarget(frame)
-                : null;
-            if (pva) {
-                pvaFrame = pva;
+            if (frame.messageId === MESSAGE.SET_POSITION_TARGET_LOCAL_NED) {
+                pvaFrame = parsePositionTarget(frame);
                 continue;
             }
             if (frame.messageId === MESSAGE.PARAM_REQUEST_LIST) {
                 PARAMETERS.forEach(([name, value], index) =>
                     send(MESSAGE.PARAM_VALUE, paramValuePayload(name, value, index)));
+                continue;
             }
             if (frame.messageId === MESSAGE.PARAM_REQUEST_READ) {
                 const name = Buffer.from(frame.payload.subarray(4, 20))
@@ -415,9 +503,58 @@ async function main() {
                     send(MESSAGE.PARAM_VALUE,
                         paramValuePayload(name, PARAMETERS[index][1], index));
                 }
+                continue;
             }
-            if (frame.messageId === MESSAGE.COMMAND_LONG) {
-                send(MESSAGE.COMMAND_ACK, commandAckPayload(frame.payload.readUInt16LE(28)));
+            // The backend asks for the indoor origin before it will take off.
+            if (frame.messageId === MESSAGE.SET_GPS_GLOBAL_ORIGIN) {
+                flightCommands.push('set_gps_global_origin');
+                send(MESSAGE.GPS_GLOBAL_ORIGIN, gpsGlobalOriginPayload());
+                send(MESSAGE.HOME_POSITION, homePositionPayload());
+                continue;
+            }
+            if (frame.messageId === MESSAGE.SET_MODE && frame.payload.length >= 6) {
+                const customMode = frame.payload.readUInt32LE(0);
+                flightCommands.push(`set_mode:${customMode}`);
+                if (customMode === MODE_GUIDED) {
+                    vehicle.guided = true;
+                    vehicle.customMode = MODE_GUIDED;
+                }
+                continue;
+            }
+            if (frame.messageId === MESSAGE.COMMAND_LONG && frame.payload.length >= 33) {
+                const command = frame.payload.readUInt16LE(28);
+                const params = [];
+                for (let index = 0; index < 7; index++) {
+                    params.push(frame.payload.readFloatLE(index * 4));
+                }
+                flightCommands.push(`command_long:${command}`);
+                switch (command) {
+                case MAV_CMD_DO_SET_MODE:
+                    if (Math.round(params[1]) === MODE_GUIDED) {
+                        vehicle.guided = true;
+                        vehicle.customMode = MODE_GUIDED;
+                    }
+                    break;
+                case MAV_CMD_COMPONENT_ARM_DISARM:
+                    vehicle.armed = params[0] >= 0.5;
+                    break;
+                case MAV_CMD_NAV_TAKEOFF: {
+                    const altitude = params[6] > 0.3 ? params[6] : 2.0;
+                    vehicle.climbTargetDown = -altitude;
+                    break;
+                }
+                case MAV_CMD_NAV_LAND:
+                    vehicle.customMode = 9;
+                    if (!vehicle.armed && vehicle.down >= 0) {
+                        vehicle.landing = false;
+                    } else {
+                        vehicle.landing = true;
+                    }
+                    break;
+                default:
+                    break;
+                }
+                send(MESSAGE.COMMAND_ACK, commandAckPayload(command));
             }
         }
     });
@@ -464,6 +601,12 @@ async function main() {
                     };
                 }
                 const payload = message.payload || {};
+                // A long-running command (takeoff) reports intermediate updates
+                // and may finish with a failure, so keep every result.
+                const entry = commandResults.get(payload.command_id);
+                if (entry && payload.status !== undefined) {
+                    entry.results.push(payload);
+                }
                 // Each command first gets a gateway ack that carries no status.
                 const resolvePending = pending.get(payload.command_id);
                 if (resolvePending && payload.status !== undefined) {
@@ -473,11 +616,16 @@ async function main() {
             });
         });
 
-        const command = (commandType, params, target, timeoutMs = 20000) => {
+        const command = (commandType, params, target, timeoutMs = 20000, soft = false) => {
             const commandId = `verify-${commandType}-${++commandCounter}`;
+            commandResults.set(commandId, { results: [] });
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     pending.delete(commandId);
+                    if (soft) {
+                        resolve({ commandId, status: 'no_result', message: 'no result before the timeout' });
+                        return;
+                    }
                     reject(new Error(`${commandType} produced no result in ${timeoutMs} ms`));
                 }, timeoutMs);
                 pending.set(commandId, (payload) => {
@@ -507,6 +655,39 @@ async function main() {
             });
         };
 
+        // The last thing the backend said about a command, not the first.
+        const outcome = (result) => {
+            const results = commandResults.get(result?.commandId)?.results ?? [];
+            return results[results.length - 1] ?? result ?? {};
+        };
+
+        // A command can be refused with slot_busy while the previous one is still
+        // waiting for heartbeat confirmation, which is what an operator resolves
+        // by clicking again.
+        const commandWithRetries = async (
+            commandType, params, target,
+            { timeoutMs = 30000, attempts = 3, retryStatuses = ['slot_busy'] } = {}
+        ) => {
+            let result = null;
+            for (let attempt = 0; attempt < attempts; attempt++) {
+                result = await command(commandType, params, target, timeoutMs, true);
+                if (!retryStatuses.includes(outcome(result).status)) return result;
+                await sleep(2000);
+            }
+            return result;
+        };
+
+        const droneTarget = { scope: 'drone', ids: [DRONE_ID] };
+        const systemTarget = { scope: 'system', ids: [] };
+        const waitUntil = async (predicate, timeoutMs, label) => {
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+                if (predicate()) return true;
+                await sleep(100);
+            }
+            throw new Error(`timed out after ${timeoutMs} ms waiting for ${label}`);
+        };
+
         // 1. the control endpoint, as the frontend selects the source
         const sourceResult = await command('connect_mocap_source', {
             mode: 'virtual',
@@ -517,7 +698,7 @@ async function main() {
             health_port: options.healthPort,
             control_host: '127.0.0.1',
             control_port: options.controlPort
-        }, { scope: 'system', ids: [] }, 10000);
+        }, systemTarget, 10000);
         record(
             'control endpoint answers the discovery probe',
             sourceResult.status === 'source_connected',
@@ -534,8 +715,71 @@ async function main() {
                 : 'the backend reports no beacon: check expected_drone_id and the port'
         );
 
-        // 3+4. parameter inventory, fusion confirmation, then the PVA frame
+        // 3. the parameter inventory. The backend drains 69 queued reads at
+        // 300 ms each, and both the PVA admission and the takeoff preflight need
+        // EK3_SRC1_POSXY, POSZ and YAW before they will let anything through.
+        const inventoryStartedAtMs = Date.now();
+        const inventoryComplete = await waitUntil(
+            () => {
+                const sources = latestFusion?.fusion_configuration;
+                return sources?.position_xy_source === 6
+                    && sources?.position_z_source === 6
+                    && sources?.yaw_source === 6;
+            },
+            60000,
+            'the backend to confirm EK3_SRC1_POSXY/POSZ/YAW from the parameter answers'
+        ).then(() => true).catch(() => false);
+        const sources = latestFusion?.fusion_configuration;
+        record(
+            'parameter answers complete the backend fusion configuration',
+            inventoryComplete,
+            sources
+                ? `EK3_SRC1_POSXY=${sources.position_xy_source}, `
+                    + `POSZ=${sources.position_z_source}, YAW=${sources.yaw_source}; `
+                    + `took ${((Date.now() - inventoryStartedAtMs) / 1000).toFixed(1)} s`
+                : 'the backend published no fusion configuration'
+        );
+
+        // 4. the operator switches the vehicle to GUIDED, then takes off. The
+        // takeoff sequence arms on its own, and the backend refuses a vehicle
+        // that was armed by hand first: the origin stage fails if it is armed.
+        const guidedResult = await command('set_flight_mode', { mode: 'GUIDED' }, droneTarget, 15000);
+        const guidedOk = await waitUntil(
+            () => vehicle.guided, 10000, 'the backend to request GUIDED')
+            .then(() => true).catch(() => false);
+        record(
+            'set_flight_mode reaches the flight controller',
+            guidedOk && vehicle.guided,
+            `${outcome(guidedResult).status}: ${outcome(guidedResult).message}; `
+                + `mode commands seen: ${flightCommands.filter((entry) => entry.startsWith('set_mode')).join(', ') || 'none'}`
+        );
+
+        // 5. takeoff: the backend asks for the indoor origin first, then drives
+        // GUIDED -> ARM -> TAKEOFF as one sequence.
+        const takeoffResult = await commandWithRetries(
+            'takeoff', {}, droneTarget, { timeoutMs: 45000 });
+        const airborne = await waitUntil(
+            () => vehicle.down <= -0.5, 30000, 'the vehicle to become airborne')
+            .then(() => true).catch(() => false);
+        const sawArm = flightCommands.includes(`command_long:${MAV_CMD_COMPONENT_ARM_DISARM}`);
+        const sawTakeoff = flightCommands.includes(`command_long:${MAV_CMD_NAV_TAKEOFF}`);
+        const sawOrigin = flightCommands.includes('set_gps_global_origin');
+        lastTakeoffOutcome = outcome(takeoffResult);
+        record(
+            'takeoff requests the origin, arms, and the vehicle climbs',
+            airborne && sawArm && sawTakeoff && sawOrigin,
+            `climbed to ${vehicle.down.toFixed(2)} m; last result ${outcome(takeoffResult).status}: `
+                + `${outcome(takeoffResult).message}`
+        );
+        if (airborne && options.moveMps !== 0) {
+            motionStartedAtMs = Date.now();
+        }
+
+        // 6+7. a PVA setpoint while airborne
         const admissionStartedAtMs = Date.now();
+        // Hold the reference level: the vehicle keeps climbing while the command
+        // is in flight, so the frame has to be compared with what was sent.
+        const requestedDown = vehicle.down;
         let attemptsUsed = 0;
         let lastStatus = 'none';
         for (let attempt = 0; attempt < options.attempts && !pvaFrame; attempt++) {
@@ -543,10 +787,10 @@ async function main() {
             try {
                 const result = await command('set_pva_target', {
                     reference_frame: 'local_ned',
-                    position: { x: 0, y: 0, z: -1 },
+                    position: { x: 0, y: 0, z: requestedDown },
                     velocity: { x: 0, y: 0, z: 0 },
                     acceleration: { x: 0, y: 0, z: 0 }
-                }, { scope: 'drone', ids: [DRONE_ID] }, 8000);
+                }, droneTarget, 8000, true);
                 lastStatus = `${result.status}: ${result.message}`;
             } catch (error) {
                 lastStatus = error.message;
@@ -558,15 +802,6 @@ async function main() {
         // link comes up are refused by design (see the compatibility doc, 6.2).
         const admissionSeconds = (Date.now() - admissionStartedAtMs) / 1000;
 
-        const sources = latestFusion?.fusion_configuration;
-        record(
-            'parameter answers reached the backend fusion configuration',
-            sources?.position_xy_source === 6 && sources?.yaw_source === 6,
-            sources
-                ? `EK3_SRC1_POSXY=${sources.position_xy_source}, `
-                    + `POSZ=${sources.position_z_source}, YAW=${sources.yaw_source}`
-                : 'the backend published no fusion configuration'
-        );
         record(
             'set_pva_target admitted and emitted as MAVLink message 84',
             pvaFrame !== null,
@@ -582,46 +817,57 @@ async function main() {
                     && pvaFrame.coordinateFrame === 1
                     && pvaFrame.targetSystem === SYSTEM_ID
                     && pvaFrame.targetComponent === COMPONENT_ID
-                    && Math.abs(pvaFrame.z + 1) < 1e-3,
+                    && Math.abs(pvaFrame.z - requestedDown) < 1e-3,
                 `type_mask ${pvaFrame.typeMask}, frame ${pvaFrame.coordinateFrame}, `
                     + `target ${pvaFrame.targetSystem}/${pvaFrame.targetComponent}`
             );
         }
 
-        // 5. the cross-check the beacon period has to stay inside
+        // 7. the cross-check the beacon period has to stay inside
         const horizontalError = Math.abs(latestFusion?.estimator_error_m?.horizontal ?? NaN);
+        const verticalError = Math.abs(latestFusion?.estimator_error_m?.vertical ?? NaN);
         record(
             `estimator/mocap cross-check stays inside its window at ${options.moveMps} m/s`,
             options.moveMps === 0
                 || (latestFusion?.horizontal_stable === true && horizontalError < 0.10),
             options.moveMps === 0
-                ? 'stationary, so not exercised (pass --move-mps=1.4 to exercise it)'
-                : `error ${horizontalError.toFixed(4)} m of 0.10 m, beacon ${options.beaconMs} ms`
+                ? 'stationary, so the horizontal window is not exercised '
+                    + '(pass --move-mps=1.4 to exercise it)'
+                : `horizontal ${horizontalError.toFixed(4)} m of 0.10 m, `
+                    + `vertical ${verticalError.toFixed(4)} m of 0.08 m, beacon ${options.beaconMs} ms`
         );
 
-        // 6+7. the hold the backend asks for around a disconnect
-        vehicle.armed = false;
-        vehicle.customMode = 9;                 // the mod's LAND mode
-        vehicle.down = 0;
-        vehicle.vx = 0;
-        vehicle.landedState = LANDED_STATE_ON_GROUND;
-        await sleep(2500);                      // let the cached binding state settle
+        // 8. land, which also leaves the vehicle in the state a disconnect needs
+        const landResult = await command('land', {}, droneTarget, 30000, true);
+        const landed = await waitUntil(
+            () => !vehicle.armed && vehicle.down >= -0.01, 20000, 'the vehicle to land and disarm')
+            .then(() => true).catch(() => false);
+        record(
+            'land reaches the flight controller and the vehicle disarms on the ground',
+            landed,
+            `down ${vehicle.down.toFixed(2)} m, armed ${vehicle.armed}; `
+                + `last result ${landResult.status}`
+        );
 
+        // 9+10. the hold the backend asks for around a disconnect. Give it a
+        // moment first: a disconnect is refused while a command is still in flight.
+        await sleep(2500);
         const disconnect = await command('disconnect_mavlink_drone', {
             endpoint_url: `udpin://127.0.0.1:${options.mavlinkPort}`
-        }, { scope: 'system', ids: [] }, 15000);
+        }, systemTarget, 15000);
+        lastDisconnectOutcome = outcome(disconnect);
         const holdRequested = controlCommands.some(
             (entry) => entry.action === 'hold' && entry.forwarding_held === true);
         record(
             'disconnecting the last link holds forwarding',
             disconnect.data?.forwarding_hold?.status === 'held' && holdRequested,
-            `backend reported ${disconnect.data?.forwarding_hold?.status}; control endpoint saw `
-                + `${controlCommands.map((entry) => entry.action).join(' -> ')}`
+            `backend reported ${disconnect.data?.forwarding_hold?.status ?? lastDisconnectOutcome.status}; `
+                + `control endpoint saw ${controlCommands.map((entry) => entry.action).join(' -> ')}`
         );
 
         await command('connect_mavlink_drone', {
             endpoint_url: `udpin://127.0.0.1:${options.mavlinkPort}`
-        }, { scope: 'system', ids: [] }, 15000).catch(() => null);
+        }, systemTarget, 15000, true);
         await sleep(1500);
         record(
             'reconnecting resumes forwarding',
@@ -634,15 +880,18 @@ async function main() {
         }
     }
 
-    const failed = checks.filter((check) => !check.ok);
+        const failed = checks.filter((check) => !check.ok);
     console.log('');
     console.log(JSON.stringify({
         ok: failed.length === 0,
         checks: checks.length,
         failed: failed.map((check) => check.name),
         beacons_sent: beaconsSent,
+        flight_commands: flightCommands,
         control_commands: controlCommands,
         fusion: latestFusion,
+        takeoff: lastTakeoffOutcome,
+        disconnect: lastDisconnectOutcome,
         frame: pvaFrame
     }, null, 2));
     return failed.length === 0 ? 0 : 1;

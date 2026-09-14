@@ -291,15 +291,23 @@ Minecraft world.z = -north
 未被命令的轴保持（不再平移）；位置轴用限速跟踪，速度和加速度作为前馈；偏航按 `yaw_rate`
 前馈限速转向。位置跟踪是开关式而非比例控制，所以不要用虚拟源的跟踪精度外推真机。
 
-### 6.2 位置类命令的准入时间
+### 6.2 位置类命令与起飞的准入时间
 
-后端在会话建立后会按 300 ms 间隔排空一份参数清单（`EK3_SRC1_*`、`GUID*`、`WPNAV_*`、电池参数等），
-并用车辆回传的 `PARAM_VALUE` 判定"飞控是否在融合外部导航"（`EK3_SRC1_POSXY/POSZ/YAW == 6`）。
-在此之前，`external_nav_horizontal_fusion_unstable` 会拒绝**所有**位置类命令，包括 `set_pva_target`。
+后端在会话建立后会按 300 ms 间隔排空一份参数清单（`EK3_SRC1_*`、`GUID*`、`WPNAV_*`、电池参数等，共 69 项），
+并用车辆回传的 `PARAM_VALUE` 判定"飞控是否在融合外部导航"。在此之前位置类命令会被拒绝：
 
-实测：使用模组的身份、心跳节奏、`PARAM_VALUE` 应答表和健康信标，后端在会话建立后约 **6 秒**内
-完成该清单并开始放行 PVA 帧。排障时不要把这 6 秒的拒绝当作链路故障；`/minidrone link status`
-显示 `backend_fresh=true` 只说明遥测往返正常。
+| 命令 | 拒绝状态 | 缺什么 |
+| --- | --- | --- |
+| `set_pva_target` / `goto_waypoint` | `external_nav_horizontal_fusion_unstable` | 需要水平融合证据（依赖 `EK3_SRC1_POSXY`） |
+| `takeoff` | `takeoff_preflight_unstable` | 起飞前检查更严：还需要 `EK3_SRC1_POSZ` 与 `EK3_SRC1_YAW`，回执里按 `estimator_position_z_source_missing`、`estimator_yaw_source_missing`、`external_nav_fusion_unconfirmed` 逐条列出 |
+
+实测：使用模组的身份、心跳节奏、`PARAM_VALUE` 应答表和健康信标，后端在会话建立后约 **3–4 秒**内
+完成该清单并开始放行（`scripts/verify-contract.mjs` 会把耗时打出来）。排障时不要把这前几秒的拒绝当作链路故障；
+`/minidrone link status` 显示 `backend_fresh=true` 只说明遥测往返正常。
+
+另外：**起飞序列要求飞行器在确认 indoor Home/Global Origin 之前保持未解锁**。后端在 `awaiting_origin`
+阶段一旦发现已解锁就以 `origin_setup_armed_unexpectedly` 结束，所以先点前端「解锁」再点「起飞」不会起飞；
+直接用「起飞」按钮走完 请求 origin → GUIDED → ARM → NAV_TAKEOFF。
 
 ## 7. 发现流程和“在线”条件
 
