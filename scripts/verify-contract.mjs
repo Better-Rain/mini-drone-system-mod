@@ -5,22 +5,25 @@
 // It plays a virtual drone and a virtual motion-capture source on the mod's own
 // ports and walks the operator's session:
 //
-//   1. the control endpoint answers the discovery probe (connect_mocap_source)
-//   2. the mocap_relay_health_v1 beacon is accepted by the backend
-//   3. set_flight_mode reaches the flight controller
-//   4. takeoff arms and reaches the flight controller, and the vehicle climbs
-//   5. the parameter answers reach the backend's fusion configuration
-//   6. a set_pva_target command arrives as MAVLink message 84, matching the request
-//   7. while flying, the beacon keeps the estimator/mocap cross-check inside its
+//   1. discovery lists the virtual source as an available candidate
+//   2. the control endpoint answers the discovery probe (connect_mocap_source)
+//   3. the mocap_relay_health_v1 beacon is accepted by the backend
+//   4. the parameter answers complete the backend's fusion configuration
+//   5. set_flight_mode reaches the flight controller
+//   6. takeoff requests the origin, arms, and the vehicle climbs
+//   7. a set_pva_target command arrives as MAVLink message 84
+//   8. that frame matches what was requested
+//   9. while flying, the beacon keeps the estimator/mocap cross-check inside its
 //      window - this is what a too-slow beacon breaks
-//   8. battery and attitude reach the published drone model the UI renders
-//   9. the published pose follows the documented Local NED -> world mapping
-//  10. land reaches the flight controller, which disarms on the ground
-//  11. disconnecting the last link holds forwarding, and reconnecting resumes it
+//  10. battery and attitude reach the published drone model the UI renders
+//  11. the published pose follows the documented Local NED -> world mapping
+//  12. land reaches the flight controller, which disarms on the ground
+//  13. disconnecting the last link holds forwarding
+//  14. reconnecting resumes forwarding
 //
-// Takeoff is the interesting one: the backend will not start it until it has
-// matched the indoor Home and GPS_GLOBAL_ORIGIN telemetry, so this also covers
-// that exchange.
+// Steps 1 and 2 are the frontend's first two clicks, and 6 is the first button an
+// operator presses: the backend will not start a takeoff until it has matched the
+// indoor Home and GPS_GLOBAL_ORIGIN telemetry, so this covers that exchange too.
 //
 // Everything here mirrors a Java source of the mod; each value names its origin
 // so a change there is visibly a change here too.
@@ -718,7 +721,27 @@ async function main() {
             throw new Error(`timed out after ${timeoutMs} ms waiting for ${label}`);
         };
 
-        // 1. the control endpoint, as the frontend selects the source
+        // 1. discovery, which is what puts the candidate in front of the operator.
+        // Without it there is nothing to click, however healthy the source is.
+        const discovery = await command(
+            'discover_mocap_sources', {}, systemTarget, 15000, true);
+        const candidates = discovery.data?.candidates ?? [];
+        const virtualCandidate = candidates.find(
+            (candidate) => candidate.profile_id === 'minecraft_virtual_mocap');
+        record(
+            'discovery lists the virtual source as an available candidate',
+            virtualCandidate?.available === true
+                && virtualCandidate?.mode === 'virtual'
+                && virtualCandidate?.control_port === options.controlPort,
+            virtualCandidate
+                ? `${virtualCandidate.profile_id} (${virtualCandidate.origin}) available=`
+                    + `${virtualCandidate.available}, control=`
+                    + `${virtualCandidate.control_host}:${virtualCandidate.control_port}`
+                : `no minecraft_virtual_mocap candidate among ${candidates.length}; `
+                    + `saw ${candidates.map((candidate) => candidate.profile_id).join(', ')}`
+        );
+
+        // 2. selecting it, as the frontend's "connect" does
         const sourceResult = await command('connect_mocap_source', {
             mode: 'virtual',
             profile_id: 'minecraft_virtual_mocap',
@@ -735,7 +758,7 @@ async function main() {
             `${sourceResult.status}: ${sourceResult.message}`
         );
 
-        // 2. the beacon, before anything can be commanded
+        // 3. the beacon, before anything can be commanded
         await sleep(1500);
         record(
             'health beacon accepted',
@@ -745,7 +768,7 @@ async function main() {
                 : 'the backend reports no beacon: check expected_drone_id and the port'
         );
 
-        // 3. the parameter inventory. The backend drains 69 queued reads at
+        // 4. the parameter inventory. The backend drains 69 queued reads at
         // 300 ms each, and both the PVA admission and the takeoff preflight need
         // EK3_SRC1_POSXY, POSZ and YAW before they will let anything through.
         const inventoryStartedAtMs = Date.now();
@@ -770,9 +793,7 @@ async function main() {
                 : 'the backend published no fusion configuration'
         );
 
-        // 4. the operator switches the vehicle to GUIDED, then takes off. The
-        // takeoff sequence arms on its own, and the backend refuses a vehicle
-        // that was armed by hand first: the origin stage fails if it is armed.
+        // 5. the operator switches the vehicle to GUIDED
         const guidedResult = await command('set_flight_mode', { mode: 'GUIDED' }, droneTarget, 15000);
         const guidedOk = await waitUntil(
             () => vehicle.guided, 10000, 'the backend to request GUIDED')
@@ -784,7 +805,7 @@ async function main() {
                 + `mode commands seen: ${flightCommands.filter((entry) => entry.startsWith('set_mode')).join(', ') || 'none'}`
         );
 
-        // 5. takeoff: the backend asks for the indoor origin first, then drives
+        // 6. takeoff: the backend asks for the indoor origin first, then drives
         // GUIDED -> ARM -> TAKEOFF as one sequence.
         const takeoffResult = await commandWithRetries(
             'takeoff', {}, droneTarget, { timeoutMs: 45000 });
@@ -805,7 +826,7 @@ async function main() {
             motionStartedAtMs = Date.now();
         }
 
-        // 6+7. a PVA setpoint while airborne
+        // 7+8. a PVA setpoint while airborne, then the emitted frame
         const admissionStartedAtMs = Date.now();
         // Hold the reference level: the vehicle keeps climbing while the command
         // is in flight, so the frame has to be compared with what was sent.
@@ -853,7 +874,7 @@ async function main() {
             );
         }
 
-        // 7. the cross-check the beacon period has to stay inside
+        // 9. the cross-check the beacon period has to stay inside
         const horizontalError = Math.abs(latestFusion?.estimator_error_m?.horizontal ?? NaN);
         const verticalError = Math.abs(latestFusion?.estimator_error_m?.vertical ?? NaN);
         record(
@@ -867,7 +888,7 @@ async function main() {
                     + `vertical ${verticalError.toFixed(4)} m of 0.08 m, beacon ${options.beaconMs} ms`
         );
 
-        // 8. park at a known NED offset and heading, then check what the UI model
+        // 10+11. park at a known NED offset and heading, then check what the UI model
         // receives. The backend publishes its world frame, which the mod documents
         // as world.x = -east, world.y = -down, world.z = -north.
         parkedNed = { north: 2.0, east: 1.0 };
@@ -903,7 +924,7 @@ async function main() {
                 + `${published?.y?.toFixed(3)}, ${published?.z?.toFixed(3)}), expected (-1, 1.5, -2)`
         );
 
-        // 9. land, which also leaves the vehicle in the state a disconnect needs
+        // 12. land, which also leaves the vehicle in the state a disconnect needs
         const landResult = await command('land', {}, droneTarget, 30000, true);
         const landed = await waitUntil(
             () => !vehicle.armed && vehicle.down >= -0.01, 20000, 'the vehicle to land and disarm')
@@ -915,7 +936,7 @@ async function main() {
                 + `last result ${landResult.status}`
         );
 
-        // 10. the hold the backend asks for around a disconnect. Give it a
+        // 13+14. the hold the backend asks for around a disconnect. Give it a
         // moment first: a disconnect is refused while a command is still in flight.
         await sleep(2500);
         const disconnect = await command('disconnect_mavlink_drone', {

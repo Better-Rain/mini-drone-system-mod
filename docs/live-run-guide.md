@@ -135,9 +135,10 @@ node .\scripts\verify-contract.mjs
 node .\scripts\verify-contract.mjs --move-mps=1.4      # 加上"飞行中"的一致性检查
 ```
 
-13 项检查：控制端点应答、健康信标被接受、参数清单补齐（`EK3_SRC1_POSXY/POSZ/YAW`）、
-`set_flight_mode` 到达、起飞序列（请求 indoor origin → 解锁 → 起飞 → 爬升）、`set_pva_target`
-被放行并变成消息 84、帧内容与请求一致、飞行中交叉一致性在窗口内、电量与姿态进入发布给前端的机型状态、
+14 项检查：发现流程把虚拟源列为可用候选、控制端点应答、健康信标被接受、
+参数清单补齐（`EK3_SRC1_POSXY/POSZ/YAW`）、`set_flight_mode` 到达、
+起飞序列（请求 indoor origin → 解锁 → 起飞 → 爬升）、`set_pva_target` 被放行并变成消息 84、
+帧内容与请求一致、飞行中交叉一致性在窗口内、电量与姿态进入发布给前端的机型状态、
 NED→世界坐标映射与文档一致、降落并上锁、断开触发转发保持、重连触发恢复。全过返回 0，任一失败返回 1
 并列出失败项；摘要里还带 backend 的最后一条命令回执，用于定位卡在哪一阶段。
 

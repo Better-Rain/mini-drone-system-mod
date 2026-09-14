@@ -189,7 +189,7 @@ node .\scripts\verify-contract.mjs
 node .\scripts\verify-contract.mjs --move-mps=1.4   # 加上"飞行中"的一致性检查
 ```
 
-共 13 项检查，全过返回 0，失败时返回 1 并列出失败项（摘要里还带 backend 的最后一条命令回执）。
+共 14 项检查，全过返回 0，失败时返回 1 并列出失败项（摘要里还带 backend 的最后一条命令回执）。
 它占用模组的那几个端口，所以**先退出 Minecraft 再跑**：backend 只认它学到的那个来源端点，
 脚本和运行中的模组不能并存。
 
