@@ -232,18 +232,19 @@ function extendedSysStatePayload(vehicle) {
 }
 
 // VirtualAutopilot#handleSetGpsGlobalOrigin answers with both origin messages;
-// the backend will not start a takeoff until it has matched them.
+// the backend will not start a takeoff until it has matched them. Both carry the
+// MAVLink 1 body only - no time_usec extension - matching the mod and the
+// backend's own encoder.
 function gpsGlobalOriginPayload() {
-    const payload = Buffer.alloc(20);
+    const payload = Buffer.alloc(12);
     payload.writeInt32LE(INDOOR_LATITUDE_E7, 0);
     payload.writeInt32LE(INDOOR_LONGITUDE_E7, 4);
     payload.writeInt32LE(INDOOR_ALTITUDE_MM, 8);
-    payload.writeBigInt64LE(BigInt(Date.now()) * 1000n, 12);
     return payload;
 }
 
 function homePositionPayload() {
-    const payload = Buffer.alloc(60);
+    const payload = Buffer.alloc(52);
     payload.writeInt32LE(INDOOR_LATITUDE_E7, 0);
     payload.writeInt32LE(INDOOR_LONGITUDE_E7, 4);
     payload.writeInt32LE(INDOOR_ALTITUDE_MM, 8);
@@ -257,7 +258,6 @@ function homePositionPayload() {
     payload.writeFloatLE(0, 40);
     payload.writeFloatLE(0, 44);
     payload.writeFloatLE(0, 48);
-    payload.writeBigInt64LE(BigInt(Date.now()) * 1000n, 52);
     return payload;
 }
 

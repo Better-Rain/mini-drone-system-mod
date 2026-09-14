@@ -260,9 +260,9 @@ public final class VirtualAutopilot {
             case MavlinkProtocol.EKF_STATUS_REPORT ->
                 send(messageId, MavlinkMessages.ekfStatusReport());
             case MavlinkProtocol.GPS_GLOBAL_ORIGIN ->
-                send(messageId, MavlinkMessages.gpsGlobalOrigin(state.timeBootMs() * 1000L));
+                send(messageId, MavlinkMessages.gpsGlobalOrigin());
             case MavlinkProtocol.HOME_POSITION ->
-                send(messageId, MavlinkMessages.homePosition(state.timeBootMs() * 1000L));
+                send(messageId, MavlinkMessages.homePosition());
             case MavlinkProtocol.EXTENDED_SYS_STATE ->
                 send(messageId, MavlinkMessages.extendedSysState(state));
             default -> {
@@ -275,11 +275,11 @@ public final class VirtualAutopilot {
         VirtualDroneSnapshot state = droneManager.snapshot();
         send(
             MavlinkProtocol.GPS_GLOBAL_ORIGIN,
-            MavlinkMessages.gpsGlobalOrigin(state.timeBootMs() * 1000L)
+            MavlinkMessages.gpsGlobalOrigin()
         );
         send(
             MavlinkProtocol.HOME_POSITION,
-            MavlinkMessages.homePosition(state.timeBootMs() * 1000L)
+            MavlinkMessages.homePosition()
         );
     }
 

@@ -127,24 +127,29 @@ public final class MavlinkMessages {
     }
 
     /**
-     * 20 bytes: the 12-byte MAVLink 1 body plus the {@code time_usec} extension.
+     * 12 bytes: the MAVLink 1 body, with no {@code time_usec} extension, matching
+     * {@code MAVLINK_MSG_ID_GPS_GLOBAL_ORIGIN_MIN_LEN}.
      *
-     * <p>Deliberately unlike {@link #ekfStatusReport()}: the backend reads
-     * {@code time_usec} from offset 12 when the payload is at least this long,
-     * so truncating to the v1 body would drop information it uses. The same
-     * applies to {@link #homePosition(long)}.
+     * <p>The backend accepts this length (its guard is {@code >= 12}) and its own
+     * v1 encoder omits the same extension, recording
+     * {@code time_usec_extension_omitted} when it sends {@code SET_GPS_GLOBAL_ORIGIN}.
+     * {@code time_usec} is diagnostics only on the receiving side.
      */
-    public static byte[] gpsGlobalOrigin(long timeBootUs) {
-        return MavlinkPayloads.writer(20)
+    public static byte[] gpsGlobalOrigin() {
+        return MavlinkPayloads.writer(12)
             .putInt(INDOOR_LATITUDE_E7)
             .putInt(INDOOR_LONGITUDE_E7)
             .putInt(INDOOR_ALTITUDE_MM)
-            .putLong(timeBootUs)
             .array();
     }
 
-    public static byte[] homePosition(long timeBootUs) {
-        ByteBuffer payload = MavlinkPayloads.writer(60);
+    /**
+     * 52 bytes: the MAVLink 1 body, with no {@code time_usec} extension, matching
+     * {@code MAVLINK_MSG_ID_HOME_POSITION_MIN_LEN}. See
+     * {@link #gpsGlobalOrigin()} for why the extension is omitted.
+     */
+    public static byte[] homePosition() {
+        ByteBuffer payload = MavlinkPayloads.writer(52);
         payload.putInt(INDOOR_LATITUDE_E7);
         payload.putInt(INDOOR_LONGITUDE_E7);
         payload.putInt(INDOOR_ALTITUDE_MM);
@@ -158,7 +163,6 @@ public final class MavlinkMessages {
         payload.putFloat(0.0f);
         payload.putFloat(0.0f);
         payload.putFloat(0.0f);
-        payload.putLong(timeBootUs);
         return payload.array();
     }
 

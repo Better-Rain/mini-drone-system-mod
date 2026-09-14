@@ -177,8 +177,7 @@ class MavlinkMessagesTest {
     }
 
     @Test
-    void decodesTheAccelerationAndYawChannelsInsteadOfSkippingThem() {
-        ByteBuffer payload = MavlinkPayloads.writer(53);
+    void decodesTheAccelerationAndYawChannelsInsteadOfSkippingThem() {        ByteBuffer payload = MavlinkPayloads.writer(53);
         payload.putInt(0);
         for (int index = 0; index < 3; index++) {
             payload.putFloat(0.0f);
@@ -204,6 +203,33 @@ class MavlinkMessagesTest {
         assertEquals(0.6f, decoded.accelerationDown());
         assertEquals(0.7f, decoded.yaw());
         assertEquals(-0.8f, decoded.yawRate());
+    }
+
+    /**
+     * Every payload the mod sends must fit the MAVLink 1 length, because the mod
+     * sends v1 frames and v1 truncates trailing extension fields. Sending an
+     * extension anyway is what a real flight controller does not do, and a strict
+     * parser dropping the frame would take the gate that message feeds with it -
+     * EKF_STATUS_REPORT carried the airspeed_variance extension until this was
+     * checked against the official library's MIN_LEN values.
+     *
+     * <p>These are the official {@code MAVLINK_MSG_ID_*_MIN_LEN} numbers, taken
+     * from the same MAVLink C library the backend links against.
+     */
+    @Test
+    void everyPayloadFitsTheMavlinkV1Length() {
+        VirtualDroneSnapshot state = snapshot(true, true, -1.0, 88.0);
+
+        assertEquals(9, MavlinkMessages.heartbeat(state).length, "HEARTBEAT");
+        assertEquals(31, MavlinkMessages.sysStatus(state).length, "SYS_STATUS");
+        assertEquals(28, MavlinkMessages.attitude(state).length, "ATTITUDE");
+        assertEquals(28, MavlinkMessages.localPositionNed(state).length, "LOCAL_POSITION_NED");
+        assertEquals(2, MavlinkMessages.extendedSysState(state).length, "EXTENDED_SYS_STATE");
+        assertEquals(3, MavlinkMessages.commandAck(400, 0).length, "COMMAND_ACK");
+        assertEquals(22, MavlinkMessages.ekfStatusReport().length, "EKF_STATUS_REPORT");
+        assertEquals(12, MavlinkMessages.gpsGlobalOrigin().length, "GPS_GLOBAL_ORIGIN");
+        assertEquals(52, MavlinkMessages.homePosition().length, "HOME_POSITION");
+        assertEquals(25, MavlinkMessages.paramValue("EK3_SRC1_YAW", 6.0f, 8, 4, 9).length, "PARAM_VALUE");
     }
 
     private static MavlinkMessages.PositionTargetLocalNed decodeMask(int typeMask) {

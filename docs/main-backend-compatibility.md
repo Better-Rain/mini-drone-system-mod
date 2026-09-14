@@ -270,15 +270,29 @@ backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当
 
 模组继续使用 MAVLink v1 帧，消息 ID 和当前用途如下：
 
-| 消息 | ID | 建议发送频率 | 用途 |
-| --- | ---: | ---: | --- |
-| `HEARTBEAT` | 0 | 1 Hz | backend 发现和绑定虚拟飞控 |
-| `ATTITUDE` | 30 | 20 Hz | 前端/后端姿态显示，弧度 |
-| `LOCAL_POSITION_NED` | 32 | 20 Hz | 权威 Local NED 位置 |
-| `EXTENDED_SYS_STATE` | 245 | 5 Hz | 起飞/降落状态 |
-| `SYS_STATUS` | 1 | 2 Hz | 电池和系统状态 |
-| `EKF_STATUS_REPORT` | 193 | 2 Hz | 估计器状态门禁 |
-| `COMMAND_ACK` | 77 | 按命令返回 | 命令必须有终态 ACK |
+| 消息 | ID | 建议发送频率 | v1 负载长度 | 用途 |
+| --- | ---: | ---: | ---: | --- |
+| `HEARTBEAT` | 0 | 1 Hz | 9 | backend 发现和绑定虚拟飞控 |
+| `ATTITUDE` | 30 | 20 Hz | 28 | 前端/后端姿态显示，弧度 |
+| `LOCAL_POSITION_NED` | 32 | 20 Hz | 28 | 权威 Local NED 位置 |
+| `EXTENDED_SYS_STATE` | 245 | 5 Hz | 2 | 起飞/降落状态 |
+| `SYS_STATUS` | 1 | 2 Hz | 31 | 电池和系统状态 |
+| `EKF_STATUS_REPORT` | 193 | 2 Hz | 22 | 估计器状态门禁 |
+| `COMMAND_ACK` | 77 | 按命令返回 | 3 | 命令必须有终态 ACK |
+| `GPS_GLOBAL_ORIGIN` | 49 | 按请求返回 | 12 | indoor origin 确认（起飞前置） |
+| `HOME_POSITION` | 242 | 按请求返回 | 52 | indoor origin 确认（起飞前置） |
+| `PARAM_VALUE` | 22 | 按请求返回 | 25 | 融合配置（起飞与位置命令前置） |
+
+**负载长度必须是 MAVLink 1 的长度**（即官方 `MAVLINK_MSG_ID_*_MIN_LEN`）：v1 帧要截断尾部的扩展字段。
+`EKF_STATUS_REPORT` 一度带着 `airspeed_variance` 发 26 字节，虽然当前后端容忍，但一旦某个严格解析器丢掉这种帧，
+就会连带丢掉 EKF 门禁——而那道门禁拒绝所有位置命令和起飞。同理 `GPS_GLOBAL_ORIGIN` 与 `HOME_POSITION`
+不发 `time_usec`：后端的守卫接受 12/52 字节，它自己的 v1 编码器也不发该扩展（发 `SET_GPS_GLOBAL_ORIGIN` 时
+会记录 `time_usec_extension_omitted`），而 `time_usec` 在接收侧只进诊断。
+`MavlinkMessagesTest#everyPayloadFitsTheMavlinkV1Length` 把这些长度钉住了。
+
+需要 keep 的还有 CRC extra：模组 `MavlinkProtocol.crcExtra` 里每个 ID 的取值都已与后端链接的官方
+MAVLink C 库（`third_party/mavlink/c_library_v2`）核对一致。改错一个 extra 的后果是该类消息被**静默丢弃**
+（例如改错消息 84 就等于虚拟飞机再也不动）。
 
 当前模组已经实现的主要命令路径包括：
 
