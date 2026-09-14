@@ -50,19 +50,45 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 
 顺序有实际意义：先让 backend 绑定好端口，模组再开始发心跳。
 
-### 2.1 启动隔离 backend
+### 2.1 启动 backend（一套参数，不是第二套系统）
 
-```powershell
-.\scripts\start-isolated-backend.ps1
+**模组从不运行后端。** 需要的是让**主项目那个后端**按虚拟参数启动——参数才是设计，进程数不是。
+两种等价做法：
+
+**做法 A（推荐，只跑一个后端）**：把下面这组参数加进你平时的后端启动命令，WebSocket 端口仍用 `8080`：
+
+```text
+--port=8080
+--mocap-source-mode=virtual --mocap-source-profile=minecraft_virtual_mocap
+--mocap-source-host=127.0.0.1 --mocap-source-port=15150
+--mocap-health-host=127.0.0.1 --mocap-health-port=18151
+--mocap-control-host=127.0.0.1 --mocap-control-port=18152
+--mavlink-mocap-mode=virtual --mavlink-mocap-profile=minecraft_virtual_mocap
+--mavlink-mocap-source-host=127.0.0.1 --mavlink-mocap-source-port=15150
+--mavlink-mocap-health-host=127.0.0.1 --mavlink-mocap-health-port=18151
+--mavlink-mocap-control-host=127.0.0.1 --mavlink-mocap-control-port=18152
+--mavlink-endpoint=udpin://127.0.0.1:14561
+--mavlink-bind-drone-id=minecraft_drone_01
+--mavlink-target-system-id=54 --mavlink-target-component-id=1
 ```
 
-脚本会先检查端口占用（占用即停止，不会杀掉已有进程），然后让主项目的 launcher 启动
-`backend\build\drone_backend.exe`，参数为虚拟 profile、`expected_drone_id=minecraft_drone_01`、
-`udpin://127.0.0.1:14561`。保持这个终端开着。
+模组侧**不需要改任何参数**：它的默认值就是 `14561` / `18151` / `18152`。
 
-**这不是第二个后端，而是主项目那个后端的一个隔离实例**：同一个可执行文件、不同的配置。
-主项目同一时刻只持有一个动捕源、一组端口，现场实例接的是真实 relay 与真机，所以要让后端连模组，
-只能另起一个参数隔离的进程；模组自己从不运行后端（见兼容性文档 §1.1）。
+**做法 B（不改现场命令，另起一个实例）**：
+
+```powershell
+.\scripts\start-isolated-backend.ps1     # 就是做法 A 的那组参数，只是换了 WS 端口 18082
+```
+
+它只是把这组参数打包好了，不是什么"第二个后端系统"。
+
+> **同一时刻只能有一个 backend 持有 `18151`/`14561`。** 模组只往这两个端口发，谁拿着谁就是它的后端；
+> 另一个后端即使把动捕源选成了 `minecraft_virtual_mocap`，也只会看到"源在线"而看不到飞机。
+> 要切到另一个后端，先停掉前一个。`Get-NetUDPEndpoint | Where-Object { $_.LocalPort -in 18151,14561 }`
+> 可以直接看当前是谁拿着。
+
+现场实例用的是真实参数（relay `15151`/`15152` + 真机端点 `14550`），而**动捕源和适配器的门禁都只有一份**，
+所以虚拟联调与真机联调要在同一个后端上分时进行，不能同时（见兼容性文档 §1.1）。
 
 ### 2.2 启动 Minecraft
 
@@ -207,6 +233,7 @@ NED→世界坐标映射与文档一致、降落并上锁、断开触发转发�
 | 现象 | 先查 |
 | --- | --- |
 | 前端候选"未响应" | 世界内是否执行过 `/minidrone mocap enable`；`18152` 是否被占用 |
+| 前端候选**在线**，但看不到飞机、命令无效 | 有一个**别的 backend 后端进程**拿着 `18151`/`14561`（你正在看的那个只探到了源的控制端点）。用 §2.1 的命令查是谁拿着，停掉多余的那个 |
 | 候选在线但前端长期没有健康状态 | 两侧 `expected_drone_id` 是否逐字一致（兼容性文档 §2.1） |
 | 命令一直 `session_pending` | 模组这次用了动态本地端口（`14601` 被占用触发了回退）：在前端断开再连接飞机，见 §2.0 |
 | 位置命令一直 `external_nav_horizontal_fusion_unstable` | 刚建链的前几秒属正常；持续则看参数清单是否完成（§3） |
