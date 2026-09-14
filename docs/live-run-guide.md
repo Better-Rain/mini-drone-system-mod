@@ -60,16 +60,23 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 `backend\build\drone_backend.exe`，参数为虚拟 profile、`expected_drone_id=minecraft_drone_01`、
 `udpin://127.0.0.1:14561`。保持这个终端开着。
 
+**这不是第二个后端，而是主项目那个后端的一个隔离实例**：同一个可执行文件、不同的配置。
+主项目同一时刻只持有一个动捕源、一组端口，现场实例接的是真实 relay 与真机，所以要让后端连模组，
+只能另起一个参数隔离的进程；模组自己从不运行后端（见兼容性文档 §1.1）。
+
 ### 2.2 启动 Minecraft
 
-开发客户端：
+**推荐走 PCL 实例**（本机一直可用，且不需要 Gradle 联网）：
 
-```powershell
-$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
-.\gradlew.bat runClient
+```text
+启动 PCL 的「Mini Drone System 1.21.1」实例（需 Java 21）
 ```
 
-或从 PCL 启动 `Mini Drone System 1.21.1` 实例（该实例要求 Java 21）。
+开发客户端（`.\gradlew.bat runClient`）也能用，但**首次运行需要联网**：它要拉取客户端运行时依赖
+（例如 `org.jline:jline-terminal`），这些依赖 `test`／`build` 都不需要，所以常被 `--offline` 掩盖。
+若报 `Could not download ... jline-terminal ... Remote host terminated the handshake`，那是 Gradle 的
+TLS 握手偶发失败，不是配置问题：先重试一次；仍失败就改用 PCL，或在 `build.gradle` 的 `repositories`
+里加一个镜像（如 `maven { url 'https://maven.aliyun.com/repository/public' }`）。
 
 ### 2.3 进入世界后打开虚拟动捕源
 
@@ -208,6 +215,7 @@ NED→世界坐标映射与文档一致、降落并上锁、断开触发转发�
 | 点了「解锁」再点「起飞」后卡在 `awaiting_origin` | 后端的起飞序列要求飞行器在确认 Home/Global Origin 之前保持**未解锁**（`awaiting_origin` 阶段发现已解锁会以 `origin_setup_armed_unexpectedly` 失败）。直接用「起飞」一次走完 GUIDED→ARM→TAKEOFF 即可 |
 | 断开链路时 `mocap.forwarding_hold_failed` | 模组没有应答 `VLT_RELAY_HOLD_FORWARDING_V1`（§4.1） |
 | 虚拟飞机对 PVA 没反应 | 该帧 `type_mask` 是否是"全忽略"；模组逐位解析，见 §6.1 |
+| `gradlew runClient` 报 `Could not download … jline-terminal … handshake` | 开发客户端首次运行要联网拉客户端运行时依赖；重试一次，或用 PCL 实例，或加 Maven 镜像（§2.2） |
 | 日志出现 `Error loading saved data: mini_drone_virtual_mocap_settings`（或 `..._training_arena`） | 用的是修复前的 JAR：`mocap enable` 会在重进世界后失效、训练场登记会在重进后丢失（方块还在，但 `arena clear` 清不掉）。重新构建并安装模组；磁盘上的旧存档能被修复后的版本正常读回 |
 
 ## 6. 关停

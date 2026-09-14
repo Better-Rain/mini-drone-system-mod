@@ -177,7 +177,16 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 .\scripts\start-isolated-backend.ps1
 ```
 
-2. 在另一个终端启动 Minecraft 开发客户端：
+这是**主项目后端的隔离实例**，不是第二个后端：同一个 `drone_backend.exe`，只是换成虚拟 profile 与
+隔离端口组，从而不动现场实例（真实 relay + 真机）。模组本身从不运行后端。
+
+2. 启动 Minecraft。推荐直接用 PCL 的实例（本机一直可用、不需要 Gradle 联网）：
+
+```text
+启动 PCL 的「Mini Drone System 1.21.1」实例（需 Java 21）
+```
+
+也可以用开发客户端，但**首次运行需要联网**拉取客户端运行时依赖（如 `jline-terminal`）：
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
