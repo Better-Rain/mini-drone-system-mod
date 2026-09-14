@@ -332,6 +332,27 @@ function parsePositionTarget(frame) {
     };
 }
 
+// The mod's own golden frames, asserted byte for byte by MavlinkV1CodecTest
+// ("MatchesMainProjectCodec"). Reproducing them here proves this verifier speaks
+// the mod's exact wire format rather than a lookalike: everything else it
+// reports would be worthless if its encoders disagreed with the shipped ones.
+const MOD_GOLDEN_FRAMES = [
+    {
+        name: 'HEARTBEAT',
+        hex: 'fe0901360100000000000203010303b70d',
+        build: () => buildFrame(
+            MESSAGE.HEARTBEAT,
+            heartbeatPayload({ armed: false, guided: false, customMode: 0 }),
+            1
+        )
+    },
+    {
+        name: 'COMMAND_ACK',
+        hex: 'fe030a36014d900100da41',
+        build: () => buildFrame(MESSAGE.COMMAND_ACK, commandAckPayload(400), 10)
+    }
+];
+
 // ----------------------------------------------------------------- the run
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -366,6 +387,18 @@ async function main() {
         checks.push({ name, ok, detail });
         console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`);
     };
+
+    // Offline self-check first: if these disagree, nothing below can be trusted.
+    for (const golden of MOD_GOLDEN_FRAMES) {
+        const produced = golden.build().toString('hex');
+        record(
+            `the verifier's ${golden.name} frame matches the mod's golden frame`,
+            produced === golden.hex,
+            produced === golden.hex
+                ? golden.hex
+                : `produced ${produced}, the mod sends ${golden.hex}`
+        );
+    }
 
     const startedAtMs = Date.now();
     // The cruise only starts once the vehicle is airborne: a vehicle that is

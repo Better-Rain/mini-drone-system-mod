@@ -202,7 +202,9 @@ node .\scripts\verify-contract.mjs
 node .\scripts\verify-contract.mjs --move-mps=1.4   # 加上"飞行中"的一致性检查
 ```
 
-共 14 项检查，全过返回 0，失败时返回 1 并列出失败项（摘要里还带 backend 的最后一条命令回执）。
+共 16 项检查，全过返回 0，失败时返回 1 并列出失败项（摘要里还带 backend 的最后一条命令回执）。
+开头两项是离线自检：脚本用自己实现的编码器重建模组的黄金帧，与 `MavlinkV1CodecTest` 里的字节逐位比对——
+它们不过就说明后面所有结论都不可信。
 它占用模组的那几个端口，所以**先退出 Minecraft 再跑**：backend 只认它学到的那个来源端点，
 脚本和运行中的模组不能并存。
 

@@ -138,7 +138,8 @@ node .\scripts\verify-contract.mjs
 node .\scripts\verify-contract.mjs --move-mps=1.4      # 加上"飞行中"的一致性检查
 ```
 
-14 项检查：发现流程把虚拟源列为可用候选、控制端点应答、健康信标被接受、
+16 项检查（前两项是离线自检：脚本重建模组黄金帧并与 `MavlinkV1CodecTest` 的字节逐位比对，
+不过就说明后面都不可信）：发现流程把虚拟源列为可用候选、控制端点应答、健康信标被接受、
 参数清单补齐（`EK3_SRC1_POSXY/POSZ/YAW`）、`set_flight_mode` 到达、
 起飞序列（请求 indoor origin → 解锁 → 起飞 → 爬升）、`set_pva_target` 被放行并变成消息 84、
 帧内容与请求一致、飞行中交叉一致性在窗口内、电量与姿态进入发布给前端的机型状态、

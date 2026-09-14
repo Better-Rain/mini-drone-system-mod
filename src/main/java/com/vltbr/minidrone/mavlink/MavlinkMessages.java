@@ -104,18 +104,36 @@ public final class MavlinkMessages {
             .array();
     }
 
+    /**
+     * 22 bytes, not the 26 a MAVLink 2 sender would use.
+     *
+     * <p>{@code airspeed_variance} is an extension field: MAVLink 1 truncates
+     * trailing extensions, and that is what a real ArduPilot v1 stream carries
+     * (the backend's own frame diagnostics expect the 22-byte form). Sending the
+     * extension inside a v1 frame is non-conformant, and a strict parser
+     * dropping the frame would take every position command and takeoff with it,
+     * because this message feeds the EKF gate. Verified against the main
+     * project's encoder in {@code MavlinkV1CodecTest}.
+     */
     public static byte[] ekfStatusReport() {
-        return MavlinkPayloads.writer(26)
+        return MavlinkPayloads.writer(22)
             .putFloat(0.001f)
             .putFloat(0.001f)
             .putFloat(0.001f)
             .putFloat(0.001f)
             .putFloat(0.001f)
             .putShort((short) (1 | 2 | 4 | 8 | 32))
-            .putFloat(0.001f)
             .array();
     }
 
+    /**
+     * 20 bytes: the 12-byte MAVLink 1 body plus the {@code time_usec} extension.
+     *
+     * <p>Deliberately unlike {@link #ekfStatusReport()}: the backend reads
+     * {@code time_usec} from offset 12 when the payload is at least this long,
+     * so truncating to the v1 body would drop information it uses. The same
+     * applies to {@link #homePosition(long)}.
+     */
     public static byte[] gpsGlobalOrigin(long timeBootUs) {
         return MavlinkPayloads.writer(20)
             .putInt(INDOOR_LATITUDE_E7)
