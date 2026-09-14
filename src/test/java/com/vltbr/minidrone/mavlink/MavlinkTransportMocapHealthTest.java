@@ -5,6 +5,8 @@ import com.vltbr.minidrone.sim.VirtualDroneState;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MavlinkTransportMocapHealthTest {
@@ -124,5 +126,49 @@ class MavlinkTransportMocapHealthTest {
             payload.contains("\"forward_rate_hz\":20.0,"),
             "the beacon must not claim a forwarding rate the transport does not use"
         );
+    }
+
+    /**
+     * The backend pins the peer it learned from the first packet it receives, so
+     * a fresh dynamic port on every start leaves it sending to the port the
+     * previous session used. Measured against the real backend: with a dynamic
+     * port a restarted mod never re-attached (30 attempts over 30 s, session
+     * permanently "pending"), while a stable port re-attached on the first
+     * command across three consecutive runs.
+     */
+    @Test
+    void prefersAStableLocalPortSoTheBackendCanReAttach() {
+        assertEquals(14601, MavlinkTransport.DEFAULT_LOCAL_PORT);
+    }
+
+    @Test
+    void fallsBackToADynamicPortWhenTheStableOneIsTaken() throws Exception {
+        try (java.net.DatagramSocket holder = new java.net.DatagramSocket(
+            new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0))) {
+            int takenPort = holder.getLocalPort();
+
+            MavlinkTransport.BoundSocket bound = MavlinkTransport.bindLoopbackSocket(takenPort);
+            try (java.net.DatagramSocket socket = bound.socket()) {
+                assertFalse(bound.usedRequestedPort(), "the fallback must be reported to the caller");
+                assertTrue(socket.isBound(), "the transport must still come up");
+                assertTrue(socket.getLocalPort() > 0);
+                assertNotEquals(takenPort, socket.getLocalPort());
+            }
+        }
+    }
+
+    @Test
+    void usesTheRequestedPortWhenItIsFree() throws Exception {
+        try (java.net.DatagramSocket reserved = new java.net.DatagramSocket(
+            new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0))) {
+            int freePort = reserved.getLocalPort();
+            reserved.close();
+
+            MavlinkTransport.BoundSocket bound = MavlinkTransport.bindLoopbackSocket(freePort);
+            try (java.net.DatagramSocket socket = bound.socket()) {
+                assertTrue(bound.usedRequestedPort(), bound.fallbackReason());
+                assertEquals(freePort, socket.getLocalPort());
+            }
+        }
     }
 }

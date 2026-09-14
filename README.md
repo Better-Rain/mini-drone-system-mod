@@ -116,13 +116,17 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 | 虚拟无人机 ID | `minecraft_drone_01` |
 | 动捕 `expected_drone_id`（模组广告） | `minecraft_drone_01` |
 | MAVLink system/component | `54 / 1` |
-| 模组本地 UDP 端口 | 动态分配 |
+| 模组本地 UDP 端口 | `127.0.0.1:14601` |
 | 后端 MAVLink 监听 | `127.0.0.1:14561` |
 | 后端 WebSocket（建议隔离值） | `127.0.0.1:18082` |
 | 动捕健康监听 | `127.0.0.1:18151` |
 | 动捕源控制 | `127.0.0.1:18152` |
 
-模组从动态本地端口向 `14561` 发送心跳，后端从收到的心跳学习返回端点并把命令发回模组。
+模组从 `127.0.0.1:14601` 向 `14561` 发送心跳，后端从收到的心跳学习返回端点并把命令发回模组。
+
+这个本地端口是**固定**的而不是动态分配的：后端会把第一次收到包的来源端点固定下来（防止局域网里的杂散扫描抢占回程），
+所以模组每次重启都换端口的后果是——后端继续往旧端口发包，新会话被当成陌生来源丢弃，必须在前端断开再连接才会恢复。
+固定端口让"重启 Minecraft 后自动接上"成立；如果该端口被别的程序占用，模组会回退到动态端口并在日志里明确说明。
 
 后端断开最后一条链路时会给 `18152` 发 `VLT_RELAY_HOLD_FORWARDING_V1`，取回链路时发 `VLT_RELAY_RESUME_FORWARDING_V1`。模组会应答，并在被保持期间**不再接受新的位置/速度设定点**（模式、解锁、降落仍然可用），同时把 `forwarding_held` 写进健康信标。`/minidrone link status` 的 `mocap_forwarding=` 可以直接读到当前状态。
 
@@ -178,7 +182,7 @@ mavlink.mocap_health.listener_ready
 | --- | --- | --- |
 | `mini_drone.mavlink.remote_host` | `127.0.0.1` | 后端 MAVLink 地址 |
 | `mini_drone.mavlink.remote_port` | `14561` | 后端 MAVLink 端口 |
-| `mini_drone.mavlink.local_port` | `0` | 模组绑定端口，`0` 表示动态分配 |
+| `mini_drone.mavlink.local_port` | `14601` | 模组绑定端口，必须固定才不会让后端把回程包发到旧端口；设 `0` 表示动态分配（重启后需要在前端重连） |
 | `mini_drone.mocap.enabled` | `false` | 启动时强制启用虚拟动捕健康信标和源控制服务；游戏内停用只对本次运行生效 |
 | `mini_drone.mocap.expected_drone_id` | `minecraft_drone_01` | 健康信标广告的身份；backend 侧 `--mavlink-mocap-expected-drone-id` 必须与它逐字一致，否则信标被静默丢弃 |
 | `mini_drone.mocap.health_port` | `18151` | 健康信标目标端口 |

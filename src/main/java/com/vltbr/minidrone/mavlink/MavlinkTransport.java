@@ -21,7 +21,10 @@ public final class MavlinkTransport {
     private static final InetAddress IPV4_LOOPBACK = ipv4Loopback();
     private static final String DEFAULT_HOST = "127.0.0.1";
     private static final int DEFAULT_REMOTE_PORT = 14561;
-    private static final int DEFAULT_LOCAL_PORT = 0;
+    // A stable port, not 0: the backend pins the peer it learned from the first
+    // packet, so a fresh dynamic port on every start leaves it sending to a port
+    // nothing listens on. See bindLoopbackSocket.
+    static final int DEFAULT_LOCAL_PORT = 14601;
     private static final int DEFAULT_MOCAP_HEALTH_PORT = 18151;
     private static final int DEFAULT_MOCAP_CONTROL_PORT = 18152;
     // The backend stores this as text and compares it with the advertised value
@@ -166,8 +169,25 @@ public final class MavlinkTransport {
         long nextSlowTelemetryAt = 0L;
         long nextHeartbeatAt = 0L;
         long nextMocapHealthAt = 0L;
-        try (DatagramSocket socket = new DatagramSocket(null)) {
-            socket.bind(new InetSocketAddress(IPV4_LOOPBACK, localPort));
+        MavlinkTransport.BoundSocket bound;
+        try {
+            bound = bindLoopbackSocket(localPort);
+        } catch (IOException exception) {
+            if (running.get()) {
+                MiniDroneMod.LOGGER.error("MAVLink UDP transport could not bind", exception);
+            }
+            running.set(false);
+            return;
+        }
+        if (!bound.usedRequestedPort()) {
+            MiniDroneMod.LOGGER.warn(
+                "MAVLink local port {} is unavailable ({}); falling back to a dynamic port, so the "
+                    + "backend has to re-learn this peer before it can command the vehicle",
+                localPort,
+                bound.fallbackReason()
+            );
+        }
+        try (DatagramSocket socket = bound.socket()) {
             socket.setSoTimeout(20);
             boundLocalPort = socket.getLocalPort();
             socketBound = true;
@@ -252,6 +272,45 @@ public final class MavlinkTransport {
             socketBound = false;
             boundLocalPort = 0;
             running.set(false);
+        }
+    }
+
+    /**
+     * Binds the loopback MAVLink socket, preferring the configured local port.
+     *
+     * <p>The backend learns this peer from the first packet and pins it, so a
+     * fresh ephemeral port on every start means the backend keeps sending to the
+     * port the previous session used and silently ignores the new one until the
+     * link is taken down and up again. A stable port lets Minecraft restart and
+     * re-attach on its own. The port is only preferred: if something else holds
+     * it the transport still comes up, on a dynamic port, and says so.
+     *
+     * <p>Logging stays with the caller so this stays free of game classes and can
+     * be tested directly.
+     */
+    static BoundSocket bindLoopbackSocket(int requestedLocalPort) throws IOException {
+        if (requestedLocalPort > 0) {
+            DatagramSocket preferred = new DatagramSocket(null);
+            try {
+                preferred.bind(new InetSocketAddress(IPV4_LOOPBACK, requestedLocalPort));
+                return new BoundSocket(preferred, "");
+            } catch (IOException exception) {
+                preferred.close();
+                String reason = exception.getMessage() == null ? "" : exception.getMessage();
+                DatagramSocket fallback = new DatagramSocket(null);
+                fallback.bind(new InetSocketAddress(IPV4_LOOPBACK, 0));
+                return new BoundSocket(fallback, reason);
+            }
+        }
+        DatagramSocket dynamic = new DatagramSocket(null);
+        dynamic.bind(new InetSocketAddress(IPV4_LOOPBACK, 0));
+        return new BoundSocket(dynamic, "");
+    }
+
+    /** A bound MAVLink socket plus why it did not get the requested port. */
+    record BoundSocket(DatagramSocket socket, String fallbackReason) {
+        boolean usedRequestedPort() {
+            return fallbackReason.isEmpty();
         }
     }
 

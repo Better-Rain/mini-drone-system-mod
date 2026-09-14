@@ -29,14 +29,29 @@ Electron 前端 <-> WebSocket <-> 同一个 C++ backend
 
 | 用途 | 默认地址 | 模组行为 |
 | --- | --- | --- |
-| backend MAVLink 接收 | `127.0.0.1:14561` | 模组向该地址发送 MAVLink v1；backend 的命令从模组动态本地端口返回 |
-| 模组 MAVLink 本地端口 | 动态分配 | 绑定 `127.0.0.1:0`，启动后在 `/minidrone link status` 中显示 |
+| backend MAVLink 接收 | `127.0.0.1:14561` | 模组向该地址发送 MAVLink v1；backend 的命令从模组本地端口返回 |
+| 模组 MAVLink 本地端口 | `127.0.0.1:14601` | 固定端口，理由见下；`mini_drone.mavlink.local_port=0` 可改回动态 |
 | backend 动捕健康监听 | `127.0.0.1:18151` | 模组周期性发送 JSON 健康信标 |
-| 模组动捕控制监听 | `127.0.0.1:18152` | 模组接收 backend 的 `STATUS`/`RECONNECT` 探测 |
+| 模组动捕控制监听 | `127.0.0.1:18152` | 模组接收 backend 的 `STATUS`/`RECONNECT`/`HOLD`/`RESUME` 探测 |
 | 虚拟源 profile 的 source endpoint | `127.0.0.1:15150` | 当前是 profile 元数据，不要求模组额外绑定此端口 |
 | 隔离 backend WebSocket | `127.0.0.1:18082` | 仅供 Electron 连接，不由模组使用 |
 
 主项目默认的真实 MAVLink backend 端口可能是 `14540` 或其他运行时值。模组的 `mini_drone.mavlink.remote_port` 必须与正在使用的隔离 backend 监听端口一致，不能凭默认值猜测。
+
+### 2.0 模组本地端口必须固定
+
+backend 会**固定**第一次收到包的来源端点（`peer_pinned`，用来防止局域网里的杂散扫描抢占回程路径），
+之后只接受来自该端点的帧。用动态本地端口时，模组每次重启都会换端口，backend 继续往旧端口发包、
+把新会话的帧当作不可信来源丢弃，链路永远停在 `session_pending`，只有在前端断开再连接才会恢复。
+
+实测（隔离 backend 不重启）：
+
+| 模组本地端口 | 重启后的结果 |
+| --- | --- |
+| 动态（`0`） | 30 次命令 / 30 秒内没有恢复，`session_pending`："slot 已发现但尚不可控" |
+| 固定 `14601` | 连续三次重启都在**第一条命令**上重新接上 |
+
+所以模组默认绑定固定端口；如果该端口被占用，会回退到动态端口并打一条 warning 说明后果。
 
 ### 2.1 身份必须两侧一致（`expected_drone_id`）
 
@@ -81,7 +96,7 @@ backend 只在自身 `expected_drone_id` **非空**时才做过滤，比较方�
 | `mini_drone.mocap.control_port` | `18152` | 模组控制监听端口 |
 | `mini_drone.mavlink.remote_host` | `127.0.0.1` | backend MAVLink 地址 |
 | `mini_drone.mavlink.remote_port` | `14561` | backend MAVLink 端口 |
-| `mini_drone.mavlink.local_port` | `0` | 模组本地 MAVLink 端口；`0` 表示动态分配 |
+| `mini_drone.mavlink.local_port` | `14601` | 模组本地 MAVLink 端口；必须固定，见 §2.0。设 `0` 表示动态分配 |
 
 开发客户端可以这样启动：
 
@@ -361,6 +376,7 @@ mavlink.mocap_health.listener_ready
 | 命令被拒 `external_nav_horizontal_fusion_unstable`，其余都正常 | 后端还没收齐 `EK3_SRC1_*` 参数（会话建立后约 6 秒）——确认模组在响应 `PARAM_REQUEST_READ`，见 §6.2 |
 | PVA 下发但虚拟飞机不动 | 检查该帧的 `type_mask` 是否只用了被支持的通道；模组逐位解析，但"全忽略"的帧会被拒绝（见 §6.1） |
 | 断开链路时出现 `mocap.forwarding_hold_failed` | 模组没有应答 `VLT_RELAY_HOLD_FORWARDING_V1`（回环地址、schema、`ok=true`），见 §4.1 |
+| 重启 Minecraft 后后端命令一直 `session_pending` | 模组这次用了动态本地端口（被占用触发回退），见 §2.0；在前端断开再连接无人机即可恢复，或让 `14601` 空出来 |
 
 ## 10. 修改边界
 
@@ -377,6 +393,7 @@ mavlink.mocap_health.listener_ready
 - `127.0.0.1:18152` 控制探测兼容性，以及 `HOLD`/`RESUME` 的应答；
 - `mocap_relay_control_v1` 和 `mocap_relay_health_v1` schema；
 - 健康信标的周期性发送、`expected_drone_id` 和安全字段；
+- 一个固定的 MAVLink 本地端口（§2.0），否则 backend 无法在模组重启后重新接上；
 - MAVLink v1 身份、消息 ID、CRC 和 Local NED 语义。
 
 本阶段不要在模组中加入第二个 backend，也不要把动捕源控制接口绑定到某个无人机槽位。无人机绑定属于 MAVLink adapter 配置；动捕源控制服务只回答“源是否在线以及当前状态”。
