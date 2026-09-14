@@ -90,6 +90,41 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 现场实例用的是真实参数（relay `15151`/`15152` + 真机端点 `14550`），而**动捕源和适配器的门禁都只有一份**，
 所以虚拟联调与真机联调要在同一个后端上分时进行，不能同时（见兼容性文档 §1.1）。
 
+### 2.1b 打包/正常用户怎么配：改配置文件，不用命令行参数
+
+打包版（`backend-supervisor.js`）本来就是从 `backend-config.json` 生成后端参数的，
+所以**没有"必须敲参数"这回事**——把这几个字段指到模组即可，其余保持现场值：
+
+```json
+{
+  "mode": "real",
+  "drone": {
+    "endpoint": "udpout://127.0.0.1:14601",
+    "bindId": "minecraft_drone_01",
+    "systemId": 54,
+    "componentId": 1
+  },
+  "mocap": {
+    "sourceHost": "127.0.0.1",
+    "sourcePort": 15150,
+    "healthPort": 18151,
+    "controlPort": 18152
+  }
+}
+```
+
+`udpout://127.0.0.1:14601` 能让**后端主动**连到模组那个**固定**本地端口——模组固定绑定 14601 正是为了
+让这件事可配置（动态端口无法写进配置文件）。这条链路已实测通过：后端以 `udpout` 发起、适配器门禁挂在
+模组的健康端口上时，`scripts/verify-contract.mjs` 的 16 项检查全过。
+
+两点注意（都源于主项目当前的实现，不是模组侧）：
+
+- `backend-supervisor.js` 在 `real`/`mocap` 两个模式下**写死了 `--mocap-source-mode=real --mocap-source-profile=real_mocap`**，
+  只是端口取自配置。所以上面这样配能跑通，但前端里那个"已配置源"会顶着 `real_mocap` 的名字，
+  同时内置的 `minecraft_virtual_mocap` 候选也会出现（两者指向同一个模组）。给 supervisor 加一个
+  `virtual` 模式分支（照抄那组 `--mocap-source-mode=virtual …`）就能让名字也正确、一个字段切换。
+- `mode: "mock"` 会走 `--adapter=mock`（假飞机），与模组无关，联调时不要用它。
+
 ### 2.2 启动 Minecraft
 
 **推荐走 PCL 实例**（本机一直可用，且不需要 Gradle 联网）：

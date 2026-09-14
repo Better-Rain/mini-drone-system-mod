@@ -42,6 +42,10 @@ import dgram from 'node:dgram';
 const DEFAULTS = {
     wsUrl: 'ws://127.0.0.1:18082',
     mavlinkPort: 14561,
+    // With this, the backend opens the link to the mod's fixed local port (its
+    // "udpout://127.0.0.1:<local-port>" style) and the verifier answers whoever
+    // wrote to it, instead of sending to a configured port.
+    replyToSender: false,
     healthPort: 18151,
     controlPort: 18152,
     // MavlinkTransport.DEFAULT_LOCAL_PORT.
@@ -68,6 +72,8 @@ function parseArgs(argv) {
         case '--beacon-ms': options.beaconMs = Number(value); break;
         case '--move-mps': options.moveMps = Number(value); break;
         case '--attempts': options.attempts = Number(value); break;
+        case '--reply-to-sender': options.replyToSender = true; break;
+        case '--endpoint-url': options.endpointUrl = value; break;
         case '--help': options.help = true; break;
         default:
             throw new Error(`unknown option ${arg} (try --help)`);
@@ -81,6 +87,8 @@ function usage() {
 
   --ws-url=<url>          backend WebSocket (default ${DEFAULTS.wsUrl})
   --mavlink-port=<port>   backend MAVLink udpin port (default ${DEFAULTS.mavlinkPort})
+  --reply-to-sender       answer whoever writes to --local-port, for a backend
+                          started with an udpout endpoint aimed at the mod
   --health-port=<port>    backend mocap health port (default ${DEFAULTS.healthPort})
   --control-port=<port>   mod control endpoint port (default ${DEFAULTS.controlPort})
   --local-port=<port>     mod MAVLink local port (default ${DEFAULTS.localPort})
@@ -459,6 +467,8 @@ async function main() {
     let lastTakeoffOutcome = null;
     let lastDisconnectOutcome = null;
     let beaconsSent = 0;
+    // The backend's address once it writes to us, when it opens the link itself.
+    let learnedPeer = null;
     const commandResults = new Map();
 
     const mavlinkSocket = dgram.createSocket('udp4');
@@ -487,11 +497,17 @@ async function main() {
         + `${vehicle.down.toFixed(6)}],`
         + '"roll_pitch_yaw_rad":[0.000000,0.000000,0.000000]}}';
 
-    const send = (messageId, payload) => mavlinkSocket.send(
-        buildFrame(messageId, payload, sequence = (sequence + 1) & 0xff),
-        options.mavlinkPort,
-        '127.0.0.1'
-    );
+    const send = (messageId, payload) => {
+        const target = options.replyToSender ? learnedPeer : null;
+        if (options.replyToSender && !target) {
+            return; // nothing has written to us yet
+        }
+        return mavlinkSocket.send(
+            buildFrame(messageId, payload, sequence = (sequence + 1) & 0xff),
+            target ? target.port : options.mavlinkPort,
+            target ? target.address : '127.0.0.1'
+        );
+    };
 
     // Every timer is registered so the finally block can stop it.
     const every = (periodMs, action) => {
@@ -544,7 +560,8 @@ async function main() {
 
     // VirtualAutopilot: answer what the backend asks for. Replies mirror
     // VirtualAutopilot#handleCommandLong / handleSetMode / handleSetGpsGlobalOrigin.
-    mavlinkSocket.on('message', (message) => {
+    mavlinkSocket.on('message', (message, rinfo) => {
+        learnedPeer = rinfo;
         for (const frame of scanFrames(message)) {
             if (frame.messageId === MESSAGE.SET_POSITION_TARGET_LOCAL_NED) {
                 pvaFrame = parsePositionTarget(frame);
@@ -971,9 +988,15 @@ async function main() {
 
         // 13+14. the hold the backend asks for around a disconnect. Give it a
         // moment first: a disconnect is refused while a command is still in flight.
+        // The endpoint has to name the link the way it was opened: with
+        // --reply-to-sender it is the udpout endpoint aimed at the mod.
         await sleep(2500);
+        const endpointUrl = options.endpointUrl
+            ?? (options.replyToSender
+                ? `udpout://127.0.0.1:${options.localPort}`
+                : `udpin://127.0.0.1:${options.mavlinkPort}`);
         const disconnect = await command('disconnect_mavlink_drone', {
-            endpoint_url: `udpin://127.0.0.1:${options.mavlinkPort}`
+            endpoint_url: endpointUrl
         }, systemTarget, 15000);
         lastDisconnectOutcome = outcome(disconnect);
         const holdRequested = controlCommands.some(
@@ -986,7 +1009,7 @@ async function main() {
         );
 
         await command('connect_mavlink_drone', {
-            endpoint_url: `udpin://127.0.0.1:${options.mavlinkPort}`
+            endpoint_url: endpointUrl
         }, systemTarget, 15000, true);
         await sleep(1500);
         record(
