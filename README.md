@@ -182,14 +182,14 @@ mavlink.mocap_health.listener_ready
 ### 不启动 Minecraft 也能验证契约
 
 契约的模组侧可以单独跑——脚本扮演虚拟飞机和虚拟动捕源，端口与节奏与模组一致，并按操作员的顺序
-走完整个会话（发现源 → 参数清单 → GUIDED → 起飞 → PVA → 降落 → 断开/重连）：
+走完整个会话（发现源 → 参数清单 → GUIDED → 起飞 → PVA → 状态回读 → 降落 → 断开/重连）：
 
 ```powershell
 node .\scripts\verify-contract.mjs
 node .\scripts\verify-contract.mjs --move-mps=1.4   # 加上"飞行中"的一致性检查
 ```
 
-共 11 项检查，全过返回 0，失败时返回 1 并列出失败项（摘要里还带 backend 的最后一条命令回执）。
+共 13 项检查，全过返回 0，失败时返回 1 并列出失败项（摘要里还带 backend 的最后一条命令回执）。
 它占用模组的那几个端口，所以**先退出 Minecraft 再跑**：backend 只认它学到的那个来源端点，
 脚本和运行中的模组不能并存。
 
@@ -218,6 +218,9 @@ world.z = -north
 ```
 
 当前状态机内部保存 NED；实体同步器会在 Minecraft 服务端 tick 中应用上述转换。
+1 个方块 = 1 米，模组不做单位换算。前端场景坐标在"世界"基础上**沿 X 轴镜像**
+（`scene.x = -world.x`），所以"+东"在游戏里是 −X、在前端场景里是 +X。
+完整的坐标链、朝向对应表和实测值见 [`docs/main-backend-compatibility.md`](docs/main-backend-compatibility.md) §6.3。
 
 无人机在首位非旁观者玩家进入主世界后生成，其初始位置位于玩家视线前方约 2 米。该位置就是本次服务端会话的 Local NED 原点；模组关闭或世界退出后实体不会写入存档。
 

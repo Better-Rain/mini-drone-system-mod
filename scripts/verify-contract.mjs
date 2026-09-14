@@ -13,8 +13,10 @@
 //   6. a set_pva_target command arrives as MAVLink message 84, matching the request
 //   7. while flying, the beacon keeps the estimator/mocap cross-check inside its
 //      window - this is what a too-slow beacon breaks
-//   8. land reaches the flight controller, which disarms on the ground
-//   9. disconnecting the last link holds forwarding, and reconnecting resumes it
+//   8. battery and attitude reach the published drone model the UI renders
+//   9. the published pose follows the documented Local NED -> world mapping
+//  10. land reaches the flight controller, which disarms on the ground
+//  11. disconnecting the last link holds forwarding, and reconnecting resumes it
 //
 // Takeoff is the interesting one: the backend will not start it until it has
 // matched the indoor Home and GPS_GLOBAL_ORIGIN telemetry, so this also covers
@@ -210,11 +212,11 @@ function attitudePayload(vehicle) {
     return payload;
 }
 
-function localPositionPayload(north, vx, vehicle) {
+function localPositionPayload(north, east, vx, vehicle) {
     const payload = Buffer.alloc(28);
     payload.writeUInt32LE(bootTimeMs(), 0);
     payload.writeFloatLE(north, 4);
-    payload.writeFloatLE(0, 8);
+    payload.writeFloatLE(east, 8);
     payload.writeFloatLE(vehicle.down, 12);
     payload.writeFloatLE(vx, 16);
     payload.writeFloatLE(0, 20);
@@ -330,6 +332,22 @@ function parsePositionTarget(frame) {
 // ----------------------------------------------------------------- the run
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// A published drone model, wherever the backend nests it: the first object that
+// carries both a battery and a pose.
+function findDroneState(value, depth = 0) {
+    if (depth > 6 || value === null || typeof value !== 'object') {
+        return null;
+    }
+    if (!Array.isArray(value) && value.battery && value.pose) {
+        return value;
+    }
+    for (const child of Object.values(value)) {
+        const found = findDroneState(child, depth + 1);
+        if (found) return found;
+    }
+    return null;
+}
+
 async function main() {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
@@ -351,9 +369,14 @@ async function main() {
     // already translating cannot pass the takeoff preflight, which is correct
     // behaviour rather than something the verifier should fight.
     let motionStartedAtMs = null;
-    const northNow = () => (motionStartedAtMs === null
-        ? 0
-        : options.moveMps * (Date.now() - motionStartedAtMs) / 1000);
+    // A fixed NED offset used to check the coordinate chain, instead of the cruise.
+    let parkedNed = null;
+    const northNow = () => (parkedNed !== null
+        ? parkedNed.north
+        : (motionStartedAtMs === null
+            ? 0
+            : options.moveMps * (Date.now() - motionStartedAtMs) / 1000));
+    const eastNow = () => parkedNed?.east ?? 0;
     const currentVelocity = () => (motionStartedAtMs === null ? 0 : options.moveMps);
     // VirtualDroneState: LANDED -> TAKING_OFF -> FLYING -> LANDING, with the
     // plant's climb and descent rates.
@@ -396,6 +419,7 @@ async function main() {
     let sequence = 0;
     let pvaFrame = null;
     let latestFusion = null;
+    let latestDroneState = null;
     let lastTakeoffOutcome = null;
     let lastDisconnectOutcome = null;
     let beaconsSent = 0;
@@ -446,7 +470,7 @@ async function main() {
             advanceFlight(50);
             send(MESSAGE.ATTITUDE, attitudePayload(vehicle));
             send(MESSAGE.LOCAL_POSITION_NED,
-                localPositionPayload(northNow(), currentVelocity(), vehicle));
+                localPositionPayload(northNow(), eastNow(), currentVelocity(), vehicle));
         });
         every(200, () => send(                                    // EXTENDED_STATE_PERIOD_MS
             MESSAGE.EXTENDED_SYS_STATE, extendedSysStatePayload(vehicle)));
@@ -601,6 +625,12 @@ async function main() {
                     };
                 }
                 const payload = message.payload || {};
+                // The published drone model is what the UI renders; find it
+                // wherever the backend nests it.
+                const drone = findDroneState(message.payload?.data) ?? findDroneState(payload);
+                if (drone) {
+                    latestDroneState = drone;
+                }
                 // A long-running command (takeoff) reports intermediate updates
                 // and may finish with a failure, so keep every result.
                 const entry = commandResults.get(payload.command_id);
@@ -837,7 +867,43 @@ async function main() {
                     + `vertical ${verticalError.toFixed(4)} m of 0.08 m, beacon ${options.beaconMs} ms`
         );
 
-        // 8. land, which also leaves the vehicle in the state a disconnect needs
+        // 8. park at a known NED offset and heading, then check what the UI model
+        // receives. The backend publishes its world frame, which the mod documents
+        // as world.x = -east, world.y = -down, world.z = -north.
+        parkedNed = { north: 2.0, east: 1.0 };
+        vehicle.down = -1.5;
+        vehicle.climbTargetDown = null;
+        vehicle.yaw = Math.PI / 2;
+        await sleep(2500);
+
+        const batteryPercent = latestDroneState?.battery?.percent;
+        const batteryVolts = latestDroneState?.battery?.voltage;
+        const orientation = latestDroneState?.pose?.orientation;
+        // Euler (0, 0, pi/2) in NED is q = (0, 0, sin(pi/4), cos(pi/4)).
+        const expectedQuaternionComponent = Math.sin(Math.PI / 4);
+        record(
+            'battery and attitude reach the published drone model',
+            Math.abs(batteryPercent - 100) < 1e-6
+                && Math.abs(batteryVolts - 7.4) < 0.01
+                && Math.abs(orientation?.z - expectedQuaternionComponent) < 1e-3
+                && Math.abs(orientation?.w - expectedQuaternionComponent) < 1e-3,
+            `battery ${batteryPercent}% / ${batteryVolts} V from SYS_STATUS; `
+                + `orientation (x=${orientation?.x?.toFixed(4)}, y=${orientation?.y?.toFixed(4)}, `
+                + `z=${orientation?.z?.toFixed(4)}, w=${orientation?.w?.toFixed(4)}) for yaw 90 deg`
+        );
+
+        const published = latestDroneState?.pose?.position;
+        const mappingOk = Math.abs(published?.x - (-1.0)) < 1e-3
+            && Math.abs(published?.y - 1.5) < 1e-3
+            && Math.abs(published?.z - (-2.0)) < 1e-3;
+        record(
+            'the published pose follows the documented NED mapping',
+            mappingOk,
+            `NED (north 2, east 1, down -1.5) -> world (${published?.x?.toFixed(3)}, `
+                + `${published?.y?.toFixed(3)}, ${published?.z?.toFixed(3)}), expected (-1, 1.5, -2)`
+        );
+
+        // 9. land, which also leaves the vehicle in the state a disconnect needs
         const landResult = await command('land', {}, droneTarget, 30000, true);
         const landed = await waitUntil(
             () => !vehicle.armed && vehicle.down >= -0.01, 20000, 'the vehicle to land and disarm')
@@ -849,7 +915,7 @@ async function main() {
                 + `last result ${landResult.status}`
         );
 
-        // 9+10. the hold the backend asks for around a disconnect. Give it a
+        // 10. the hold the backend asks for around a disconnect. Give it a
         // moment first: a disconnect is refused while a command is still in flight.
         await sleep(2500);
         const disconnect = await command('disconnect_mavlink_drone', {

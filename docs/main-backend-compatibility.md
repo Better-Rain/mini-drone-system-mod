@@ -309,6 +309,37 @@ Minecraft world.z = -north
 阶段一旦发现已解锁就以 `origin_setup_armed_unexpectedly` 结束，所以先点前端「解锁」再点「起飞」不会起飞；
 直接用「起飞」按钮走完 请求 origin → GUIDED → ARM → NAV_TAKEOFF。
 
+### 6.3 坐标链与单位（1 方块 = 1 米）
+
+模组不做单位换算：Minecraft 的 1 个方块就是 1 米。同一份位姿要经过三段变换，三段都别各自"解释"：
+
+| 环节 | 变换 | 实现 |
+| --- | --- | --- |
+| 模组：NED → Minecraft 世界 | `world.x = origin.x − east`；`world.y = origin.y − down`；`world.z = origin.z − north` | `NedWorldTransform` |
+| backend：`LOCAL_POSITION_NED` → 内部世界坐标 | `world_x = 偏移量 − east`；`world_y = −down`；`world_z = 偏移量 − north` | `MavlinkAdapterInternalModel.inc` 的 `local_ned` 分支 |
+| 前端：世界 → 场景 | `scene.x = −world.x`；`scene.y = world.y`；`scene.z = world.z` | `scene-coordinate-frame.mjs` |
+
+backend 的偏移量只对发过 `GLOBAL_POSITION_INT` 的车辆生效（用它的经纬度对齐共享原点）。模组不发这条消息，
+所以偏移量为 0，两侧的世界坐标**逐轴相同**。
+
+`scripts/verify-contract.mjs` 会实测这条链：NED `(north 2, east 1, down −1.5)` → backend 发布
+`world (−1, 1.5, −2)` ✓。
+
+由此得到的朝向对应表：
+
+| 方向 | Minecraft 世界（模组） | 前端场景 |
+| --- | --- | --- |
+| +北（+north） | −Z | −Z |
+| +东（+east） | −X | +X |
+| 上（−down） | +Y | +Y |
+
+也就是**前端场景 = Minecraft 世界沿 X 轴镜像**（Minecraft 是左手系）。"飞机在北边"在游戏里和场景里都是 −Z；
+"飞机在东边"在游戏里是 −X、在场景里是 +X。
+
+姿态：模组把 NED 欧拉角原样放进 `ATTITUDE`（消息 30），backend 转成 NED 四元数发布；前端再用
+`mavlinkNedQuaternionToSceneQuaternion` 换到场景系。`NedWorldTransform` 里那个
+`180 − yaw°` 只用于 **Minecraft 实体自身的朝向渲染**，不参与遥测，也不要拿它去核对前端显示的航向。
+
 ## 7. 发现流程和“在线”条件
 
 Electron 点击“重新扫描”后，主项目执行：
