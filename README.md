@@ -17,6 +17,9 @@ Electron/Vite 前端 -> WebSocket v1 -> C++ Backend -> MAVLink UDP -> Fabric 模
 - Gradle 8.7
 - Java 21
 
+术语与主项目前端保持一致：**解锁 = arm**（`armed=true`）、**上锁／未解锁 = disarm**（`armed=false`）。
+涉及安全状态的说明一律带上 `armed=` 取值，避免"已解锁"被读成"可以起飞"。
+
 ## 当前阶段
 
 当前版本是协议、飞控与可视化 MVP，已经实现：
@@ -141,7 +144,7 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 所以模组每次重启都换端口的后果是——后端继续往旧端口发包，新会话被当成陌生来源丢弃，必须在前端断开再连接才会恢复。
 固定端口让"重启 Minecraft 后自动接上"成立；如果该端口被别的程序占用，模组会回退到动态端口并在日志里明确说明。
 
-后端断开最后一条链路时会给 `18152` 发 `VLT_RELAY_HOLD_FORWARDING_V1`，取回链路时发 `VLT_RELAY_RESUME_FORWARDING_V1`。模组会应答，并在被保持期间**不再接受新的位置/速度设定点**（模式、解锁、降落仍然可用），同时把 `forwarding_held` 写进健康信标。`/minidrone link status` 的 `mocap_forwarding=` 可以直接读到当前状态。
+后端断开最后一条链路时会给 `18152` 发 `VLT_RELAY_HOLD_FORWARDING_V1`，取回链路时发 `VLT_RELAY_RESUME_FORWARDING_V1`。模组会应答，并在被保持期间**不再接受新的位置/速度设定点**（模式、解锁（`arm`）、降落仍然可用），同时把 `forwarding_held` 写进健康信标。`/minidrone link status` 的 `mocap_forwarding=` 可以直接读到当前状态。
 
 ## 安全隔离
 
@@ -254,7 +257,7 @@ world.z = -north
 /minidrone arena clear
 ```
 
-`origin set` 会将原点移动到执行命令玩家水平视线前方约 2 米，并把虚拟飞控的 Local NED 位置清零。为避免飞行中坐标系突变，该命令只接受已落地且已解锁的无人机。
+`origin set` 会将原点移动到执行命令玩家水平视线前方约 2 米，并把虚拟飞控的 Local NED 位置清零。为避免飞行中坐标系突变，该命令只接受已落地且**未解锁**（`armed=false`，即已上锁）的无人机。
 
 成功的调试命令返回末尾都有 `[COPY]` 按钮。点击后会把完整返回文本复制到系统剪贴板，便于提交调试日志；按钮悬停时会显示复制提示。
 
@@ -262,7 +265,7 @@ world.z = -north
 
 中心选择工具列入后续阶段：计划增加一个专用选择器，右键方块记录场地中心，再通过 `arena create selected` 生成，减少手工输入坐标；当前版本的绝对坐标命令仍是确定性调试入口。
 
-`selftest` 不会改变当前世界中的无人机、场地或主项目连接。它在内存中运行 10 项闭环检查：GUIDED/ARM 门禁、起飞、限速航点、PVA 速度通道、PVA 偏航通道、降落解锁、Local NED 重置、MAVLink 心跳编解码、坐标变换和训练场布局。训练场存档往返由世界加载/保存路径负责。开发阶段可直接运行 `\.\gradlew.bat closedLoopTest`，进入游戏后只需执行一次 `/minidrone selftest` 即可确认客户端加载了同一套逻辑。
+`selftest` 不会改变当前世界中的无人机、场地或主项目连接。它在内存中运行 10 项闭环检查：GUIDED/ARM 门禁、起飞、限速航点、PVA 速度通道、PVA 偏航通道、降落后上锁（`armed=false`）、Local NED 重置、MAVLink 心跳编解码、坐标变换和训练场布局。训练场存档往返由世界加载/保存路径负责。开发阶段可直接运行 `\.\gradlew.bat closedLoopTest`，进入游戏后只需执行一次 `/minidrone selftest` 即可确认客户端加载了同一套逻辑。
 
 一次启动的建议验证顺序：
 
