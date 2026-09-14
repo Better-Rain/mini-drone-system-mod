@@ -141,7 +141,22 @@ VLT_RELAY_RECONNECT_V1
 
 ## 5. 动捕健康信标
 
-模组向 backend 的健康地址（默认 `127.0.0.1:18151`）持续发送 UDP UTF-8 JSON。建议周期为 250 ms；backend 将超过 1500 ms 未收到的信标视为过期。
+模组向 backend 的健康地址（默认 `127.0.0.1:18151`）持续发送 UDP UTF-8 JSON。当前周期为 **50 ms（20 Hz）**，
+与 `LOCAL_POSITION_NED` 同拍；backend 将超过 1500 ms 未收到的信标视为过期。
+
+**为什么必须是 20 Hz 而不是主项目 relay 的 10 Hz**：backend 的位置类准入里有一条交叉一致性判据，
+把**最新信标里的 `last_forwarded_pose`** 与**最新 `LOCAL_POSITION_NED`** 相比，超过 **0.10 m** 就拒绝。
+信标之间的位姿是冻结的，而位置遥测一直在更新，所以最坏偏差就是"一个信标周期内飞过的距离"：
+
+| 信标周期 | 1.4 m/s 下的最坏偏差 | 结果 |
+| ---: | ---: | --- |
+| 250 ms | 0.35 m | 实测 0.26 m，6 条 `set_pva_target` 里 **5 条被拒** |
+| 100 ms | 0.14 m | 仍超限，只是触发变得稀疏 |
+| **50 ms** | **0.07 m** | 实测 0.0014 m，全部放行 |
+
+这个偏差与采样相位无关，所以不能靠"信标恰好和遥测同时发"来规避。主项目 relay 用 10 Hz 够用是因为
+真机实验速度只有 0.15–0.35 m/s；虚拟飞控上限 1.4 m/s，必须更快。改动这个周期或虚拟飞控的水平限速时，
+请同步看 `MavlinkTransportMocapHealthTest` 里的不变量测试——它把这条耦合关系固定下来了。
 
 每条消息的 `schema` 必须为 `mocap_relay_health_v1`。当前兼容的完整示例：
 
@@ -331,6 +346,7 @@ mavlink.mocap_health.listener_ready
 | 模组 `/minidrone link status` 的 `backend_fresh=false` | MAVLink remote host/port 错误；隔离 backend 未启动；指向了错误的生产 backend |
 | 位置正常但姿态不对 | 先检查 MAVLink `ATTITUDE` 消息 ID 30 和四元数/欧拉角转换；健康 JSON 不负责覆盖前端姿态 |
 | 位置命令被拒绝 | 健康信标过期、`healthy=false`、`safety_latched=true`、融合契约字段缺失或 EKF 状态不满足 |
+| 位置命令**只在飞行中被拒**（悬停正常） | 信标周期与飞行速度的乘积超过 backend 的 0.10 m 一致性窗口，见 §5；确认模组按 50 ms 发信标 |
 | 命令被拒 `external_nav_horizontal_fusion_unstable`，其余都正常 | 后端还没收齐 `EK3_SRC1_*` 参数（会话建立后约 6 秒）——确认模组在响应 `PARAM_REQUEST_READ`，见 §6.2 |
 | PVA 下发但虚拟飞机不动 | 检查该帧的 `type_mask` 是否只用了被支持的通道；模组逐位解析，但"全忽略"的帧会被拒绝（见 §6.1） |
 

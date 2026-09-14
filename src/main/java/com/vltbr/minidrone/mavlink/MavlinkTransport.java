@@ -32,7 +32,15 @@ public final class MavlinkTransport {
     private static final long EXTENDED_STATE_PERIOD_MS = 200L;
     private static final long SLOW_TELEMETRY_PERIOD_MS = 500L;
     private static final long HEARTBEAT_PERIOD_MS = 1000L;
-    private static final long MOCAP_HEALTH_PERIOD_MS = 250L;
+    // The backend compares the pose in the newest health beacon against the
+    // newest flight-controller position, and refuses horizontal setpoints when
+    // they disagree by more than 0.10 m. The beacon pose is frozen between
+    // beacons while the position keeps updating, so the error reaches
+    // (top speed x this period) just before the next beacon: 1.4 m/s x 250 ms is
+    // 0.35 m, which rejected 5 of 6 setpoints in a live measurement. At the
+    // telemetry cadence the whole window stays inside the limit at any phase.
+    // See MavlinkTransportMocapHealthTest for the invariant.
+    static final long MOCAP_HEALTH_PERIOD_MS = 50L;
 
     private final VirtualDroneManager droneManager;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -342,12 +350,13 @@ public final class MavlinkTransport {
                 + "\"roll_pitch_source\":\"flight_controller\","
                 + "\"yaw_source\":\"motion_capture_external_nav\","
                 + "\"expected_drone_id\":%s,\"tracking_age_ms\":0.0,"
-            + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
-            + "\"tracking_holdover_active\":false,"
-            + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
+                + "\"forward_rate_hz\":%s,\"orientation_held\":false,"
+                + "\"tracking_holdover_active\":false,"
+                + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
             wallTimeUnixUs,
             jsonString(expectedDroneId),
+            Double.toString(1000.0 / MOCAP_HEALTH_PERIOD_MS),
             state.northM(),
             state.eastM(),
             state.downM(),

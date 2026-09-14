@@ -4,7 +4,9 @@ import com.vltbr.minidrone.mavlink.MavlinkProtocol;
 
 public final class VirtualDroneState {
     private static final double TICK_SECONDS = 0.05;
-    private static final double HORIZONTAL_SPEED_MPS = 1.4;
+    /** Top horizontal speed of the virtual plant, in metres per second. */
+    public static final double HORIZONTAL_SPEED_LIMIT_MPS = 1.4;
+    private static final double HORIZONTAL_SPEED_MPS = HORIZONTAL_SPEED_LIMIT_MPS;
     private static final double CLIMB_RATE_MPS = 0.8;
     private static final double DESCENT_RATE_MPS = 0.6;
     private static final double HORIZONTAL_ACCELERATION_MPS2 = 2.0;

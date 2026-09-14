@@ -1,6 +1,7 @@
 package com.vltbr.minidrone.mavlink;
 
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
+import com.vltbr.minidrone.sim.VirtualDroneState;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -69,5 +70,38 @@ class MavlinkTransportMocapHealthTest {
             MavlinkTransport.resolveMocapExpectedDroneId("   ")
         );
         assertEquals("54", MavlinkTransport.resolveMocapExpectedDroneId(" 54 "));
+    }
+
+    /**
+     * The backend refuses horizontal setpoints when its newest motion-capture
+     * pose is more than 0.10 m away from the newest flight-controller position
+     * (kTakeoffMaximumMocapHorizontalErrorM). The pose is frozen between
+     * beacons while the position keeps updating, so the worst-case disagreement
+     * is the distance the vehicle covers in one beacon period. Exceeding it does
+     * not fail cleanly: admission becomes intermittent and looks like a flaky
+     * link. Measured at 250 ms with a drone flying at 1.4 m/s, the error reached
+     * 0.26 m and 5 of 6 setpoints were rejected.
+     */
+    @Test
+    void keepsTheHealthBeaconInsideTheBackendConsistencyWindowAtTopSpeed() {
+        double backendLimitM = 0.10;
+        double travelledPerBeaconPeriodM =
+            VirtualDroneState.HORIZONTAL_SPEED_LIMIT_MPS * MavlinkTransport.MOCAP_HEALTH_PERIOD_MS / 1000.0;
+
+        assertTrue(
+            travelledPerBeaconPeriodM < backendLimitM,
+            "a beacon every " + MavlinkTransport.MOCAP_HEALTH_PERIOD_MS
+                + " ms lets the pose lag by " + travelledPerBeaconPeriodM
+                + " m, which is outside the backend's " + backendLimitM + " m window"
+        );
+    }
+
+    @Test
+    void advertisesTheBeaconRateTheTransportActuallyUses() {
+        String payload = MavlinkTransport.mocapHealthPayload(snapshot(), 0L, "minecraft_drone_01");
+        assertTrue(
+            payload.contains("\"forward_rate_hz\":20.0,"),
+            "the beacon must not claim a forwarding rate the transport does not use"
+        );
     }
 }
