@@ -18,7 +18,8 @@ class MocapControlServerTest {
             assertEquals(
                 "{\"schema\":\"mocap_relay_control_v1\",\"ok\":true,\"action\":\"status\","
                     + "\"message\":\"virtual motion-capture source is online\","
-                    + "\"source_packet_age_ms\":0,\"safety_latched\":false}",
+                    + "\"source_packet_age_ms\":0,\"safety_latched\":false,"
+                    + "\"forwarding_held\":false}",
                 sendAndReceive(client, server.port(), "VLT_RELAY_STATUS_V1")
             );
         }
@@ -30,6 +31,44 @@ class MocapControlServerTest {
             String response = sendAndReceive(client, server.port(), "VLT_RELAY_RECONNECT_V1\r\n");
             assertTrue(response.contains("\"action\":\"reconnect\""));
             assertTrue(response.contains("\"ok\":true"));
+        }
+    }
+
+    // The backend holds forwarding when the last vehicle link is disconnected and
+    // resumes it when a link is taken back. Answering with a valid
+    // mocap_relay_control_v1 reply is what keeps it from reporting
+    // mocap.forwarding_hold_failed against a source that is behaving correctly.
+    @Test
+    void holdAndResumeReportTheStateAndStatusCarriesIt() throws Exception {
+        try (TestServer server = new TestServer(); DatagramSocket client = new DatagramSocket()) {
+            String hold = sendAndReceive(client, server.port(), "VLT_RELAY_HOLD_FORWARDING_V1");
+            assertTrue(hold.contains("\"action\":\"hold\""), hold);
+            assertTrue(hold.contains("\"ok\":true"), hold);
+            assertTrue(hold.contains("\"forwarding_held\":true"), hold);
+            assertTrue(server.hold().held());
+
+            String status = sendAndReceive(client, server.port(), "VLT_RELAY_STATUS_V1");
+            assertTrue(status.contains("\"forwarding_held\":true"), status);
+            assertTrue(server.hold().held(), "a status probe must not resume forwarding");
+
+            String resume = sendAndReceive(client, server.port(), "VLT_RELAY_RESUME_FORWARDING_V1");
+            assertTrue(resume.contains("\"action\":\"resume\""), resume);
+            assertTrue(resume.contains("\"forwarding_held\":false"), resume);
+            assertFalse(server.hold().held());
+        }
+    }
+
+    @Test
+    void aReconnectClearsAnActiveHold() throws Exception {
+        try (TestServer server = new TestServer(); DatagramSocket client = new DatagramSocket()) {
+            assertTrue(sendAndReceive(client, server.port(), "VLT_RELAY_HOLD_FORWARDING_V1")
+                .contains("\"forwarding_held\":true"));
+            assertTrue(server.hold().held());
+
+            String response = sendAndReceive(client, server.port(), "VLT_RELAY_RECONNECT_V1");
+            assertTrue(response.contains("\"action\":\"reconnect\""), response);
+            assertTrue(response.contains("\"forwarding_held\":false"), response);
+            assertFalse(server.hold().held());
         }
     }
 
@@ -56,7 +95,7 @@ class MocapControlServerTest {
 
     @Test
     void isUnboundUntilItsRunLoopStarts() {
-        MocapControlServer server = new MocapControlServer(0);
+        MocapControlServer server = new MocapControlServer(0, new ForwardingHold());
         assertFalse(server.isBound());
         assertEquals(0, server.boundPort());
     }
@@ -102,6 +141,7 @@ class MocapControlServerTest {
         private static final java.net.InetAddress LOOPBACK = java.net.InetAddress.getLoopbackAddress();
 
         private final AtomicBoolean running = new AtomicBoolean(true);
+        private final ForwardingHold hold = new ForwardingHold();
         private final MocapControlServer server;
         private final Thread thread = new Thread(this::run, "mocap-control-test");
 
@@ -110,13 +150,17 @@ class MocapControlServerTest {
         }
 
         TestServer(int port) throws Exception {
-            server = new MocapControlServer(port);
+            server = new MocapControlServer(port, hold);
             thread.start();
             long deadline = System.nanoTime() + 1_000_000_000L;
             while (!server.isBound() && System.nanoTime() < deadline) {
                 Thread.sleep(5L);
             }
             assertTrue(server.isBound(), "control endpoint did not bind within one second");
+        }
+
+        ForwardingHold hold() {
+            return hold;
         }
 
         java.net.InetAddress address() {

@@ -124,6 +124,8 @@ PCL 会因为实例目录已有 `mods` 自动开启版本隔离。虚拟动捕�
 
 模组从动态本地端口向 `14561` 发送心跳，后端从收到的心跳学习返回端点并把命令发回模组。
 
+后端断开最后一条链路时会给 `18152` 发 `VLT_RELAY_HOLD_FORWARDING_V1`，取回链路时发 `VLT_RELAY_RESUME_FORWARDING_V1`。模组会应答，并在被保持期间**不再接受新的位置/速度设定点**（模式、解锁、降落仍然可用），同时把 `forwarding_held` 写进健康信标。`/minidrone link status` 的 `mocap_forwarding=` 可以直接读到当前状态。
+
 ## 安全隔离
 
 虚拟动捕健康信标和独立源控制服务默认关闭。推荐进入世界后使用 `/minidrone mocap enable`；仅在需要启动即开启或进行自动化联调时使用 JVM 覆盖：

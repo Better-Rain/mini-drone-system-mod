@@ -141,14 +141,15 @@ public final class MiniDroneMod implements ModInitializer {
             "MAVLink link: state=%s, remote=%s:%d, local=127.0.0.1:%d, "
                 + "backend_fresh=%s, rx_packets=%d, rx_frames=%d, tx_frames=%d, "
                 + "last_rx=%s, last_tx=%s, mocap_health=%s, mocap_control=%s, "
-                + "mocap_expected_id=%s",
+                + "mocap_expected_id=%s, mocap_forwarding=%s",
             status.state(),
             status.remoteHost(), status.remotePort(), status.localPort(),
             status.backendFresh(now), status.receivedPackets(), status.receivedFrames(),
             status.transmittedFrames(), lastRx, lastTx,
             status.mocapHealthEnabled(),
             formatMocapControlStatus(status),
-            status.mocapExpectedDroneId()
+            status.mocapExpectedDroneId(),
+            status.forwardingHeld() ? "held" : "forwarding"
         );
         source.sendSuccess(() -> copyableMessage(message), false);
         return status.state() == MavlinkLinkStatus.LinkState.DOWN ? 0 : 1;
@@ -182,7 +183,11 @@ public final class MiniDroneMod implements ModInitializer {
         String state = status.mocapHealthEnabled() ? "enabled" : "disabled";
         MutableComponent message = Component.literal(
             "Virtual mocap: " + state + " (control " + formatMocapControlStatus(status)
-                + ", advertised_id=" + status.mocapExpectedDroneId() + ") "
+                + ", advertised_id=" + status.mocapExpectedDroneId()
+                + ", forwarding=" + (status.forwardingHeld()
+                    ? "HELD (new setpoints are ignored)"
+                    : "running")
+                + ") "
                 + "[" + action + "]"
         );
         return message

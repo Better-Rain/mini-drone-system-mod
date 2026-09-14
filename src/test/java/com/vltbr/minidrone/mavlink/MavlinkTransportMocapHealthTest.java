@@ -34,21 +34,41 @@ class MavlinkTransportMocapHealthTest {
                 + "\"expected_drone_id\":\"minecraft_drone_01\",\"tracking_age_ms\":0.0,"
                 + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
                 + "\"tracking_holdover_active\":false,"
+                + "\"forwarding_held\":false,\"forwarding_hold_reason\":\"\","
                 + "\"last_forwarded_pose\":{\"position_m\":[1.250000,-2.500000,0.750000],"
                 + "\"roll_pitch_yaw_rad\":[0.040000,-0.050000,0.060000]}}",
             MavlinkTransport.mocapHealthPayload(
                 snapshot(),
                 1787600000000000L,
-                "minecraft_drone_01"
+                "minecraft_drone_01",
+                new ForwardingHold()
             )
         );
+    }
+
+    @Test
+    void reportsAnActiveForwardingHoldInTheBeacon() {
+        ForwardingHold hold = new ForwardingHold();
+        hold.apply(ForwardingHold.Change.HOLD);
+
+        String payload = MavlinkTransport.mocapHealthPayload(
+            snapshot(), 0L, "minecraft_drone_01", hold);
+
+        assertTrue(payload.contains("\"forwarding_held\":true,"), payload);
+        assertTrue(payload.contains("\"forwarding_hold_reason\":\"backend_request\","), payload);
+        // A forwarding hold is not a safety latch, and it must not make the
+        // source look unhealthy: the backend would refuse every command instead
+        // of only the position setpoints the hold is about.
+        assertTrue(payload.contains("\"healthy\":true"), payload);
+        assertTrue(payload.contains("\"safety_latched\":false"), payload);
     }
 
     // The backend compares the advertised value against its configured text
     // verbatim, so a numeric configuration has to be advertised as text too.
     @Test
     void advertisesAConfiguredNumericIdentityAsText() {
-        String payload = MavlinkTransport.mocapHealthPayload(snapshot(), 0L, "54");
+        String payload = MavlinkTransport.mocapHealthPayload(
+            snapshot(), 0L, "54", new ForwardingHold());
         assertTrue(payload.contains("\"expected_drone_id\":\"54\","));
     }
 
@@ -98,7 +118,8 @@ class MavlinkTransportMocapHealthTest {
 
     @Test
     void advertisesTheBeaconRateTheTransportActuallyUses() {
-        String payload = MavlinkTransport.mocapHealthPayload(snapshot(), 0L, "minecraft_drone_01");
+        String payload = MavlinkTransport.mocapHealthPayload(
+            snapshot(), 0L, "minecraft_drone_01", new ForwardingHold());
         assertTrue(
             payload.contains("\"forward_rate_hz\":20.0,"),
             "the beacon must not claim a forwarding rate the transport does not use"

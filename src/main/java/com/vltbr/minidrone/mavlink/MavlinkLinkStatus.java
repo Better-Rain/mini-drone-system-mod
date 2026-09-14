@@ -18,7 +18,8 @@ public record MavlinkLinkStatus(
     boolean mocapHealthEnabled,
     String mocapExpectedDroneId,
     int mocapControlPort,
-    boolean mocapControlBound
+    boolean mocapControlBound,
+    boolean forwardingHeld
 ) {
     private static final long BACKEND_FRESHNESS_MS = 3_000L;
 

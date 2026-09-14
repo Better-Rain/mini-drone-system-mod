@@ -19,16 +19,19 @@ public final class VirtualAutopilot {
     private final MinecraftServer server;
     private final VirtualDroneManager droneManager;
     private final Consumer<MavlinkOutboundMessage> outbound;
+    private final ForwardingHold forwardingHold;
     private final Map<String, Parameter> parameters = new LinkedHashMap<>();
 
     public VirtualAutopilot(
         MinecraftServer server,
         VirtualDroneManager droneManager,
-        Consumer<MavlinkOutboundMessage> outbound
+        Consumer<MavlinkOutboundMessage> outbound,
+        ForwardingHold forwardingHold
     ) {
         this.server = server;
         this.droneManager = droneManager;
         this.outbound = outbound;
+        this.forwardingHold = forwardingHold;
         registerParameters();
     }
 
@@ -172,6 +175,15 @@ public final class VirtualAutopilot {
         if (!targetsThisVehicle(target.targetSystem(), target.targetComponent())
             || target.coordinateFrame() != MavlinkProtocol.MAV_FRAME_LOCAL_NED
             || !target.commandsAnyChannel()) {
+            return;
+        }
+        // The backend holds forwarding when no operator link owns the vehicle. A
+        // relay answers by pausing its multicast; here the equivalent is to stop
+        // accepting new setpoints, leaving the vehicle on the last one it took.
+        if (!forwardingHold.acceptsSetpoints()) {
+            MiniDroneMod.LOGGER.debug(
+                "Ignored local NED setpoint while motion-capture forwarding is held"
+            );
             return;
         }
         // The backend's PVA setpoints use many type_mask combinations, so every

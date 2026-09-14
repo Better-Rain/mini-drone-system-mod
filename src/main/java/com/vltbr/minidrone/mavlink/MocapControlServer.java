@@ -17,12 +17,14 @@ final class MocapControlServer {
     private static final int RECEIVE_TIMEOUT_MS = 250;
 
     private final int configuredPort;
+    private final ForwardingHold forwardingHold;
     private volatile DatagramSocket socket;
     private volatile boolean bound;
     private volatile int boundPort;
 
-    MocapControlServer(int configuredPort) {
+    MocapControlServer(int configuredPort, ForwardingHold forwardingHold) {
         this.configuredPort = configuredPort;
+        this.forwardingHold = forwardingHold;
     }
 
     void run(AtomicBoolean running, IntConsumer onBound) throws IOException {
@@ -39,11 +41,18 @@ final class MocapControlServer {
                 DatagramPacket request = new DatagramPacket(buffer, buffer.length);
                 try {
                     candidate.receive(request);
-                    MocapControlProtocol.responseFor(
+                    MocapControlProtocol.commandFor(
                         request.getData(),
                         request.getOffset(),
                         request.getLength()
-                    ).ifPresent(response -> sendResponse(candidate, request, response));
+                    ).ifPresent(command -> sendResponse(
+                        candidate,
+                        request,
+                        MocapControlProtocol.response(
+                            command,
+                            forwardingHold.apply(command.holdChange())
+                        )
+                    ));
                 } catch (SocketTimeoutException ignored) {
                     // The timeout allows the owning transport to stop this endpoint promptly.
                 } catch (SocketException exception) {

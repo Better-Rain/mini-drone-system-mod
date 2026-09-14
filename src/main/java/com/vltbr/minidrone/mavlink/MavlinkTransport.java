@@ -56,6 +56,7 @@ public final class MavlinkTransport {
     private final String mocapExpectedDroneId;
     private final MocapControlServer mocapControlServer;
     private final VirtualAutopilot autopilot;
+    private final ForwardingHold forwardingHold = new ForwardingHold();
     private final AtomicLong receivedPackets = new AtomicLong();
     private final AtomicLong receivedFrames = new AtomicLong();
     private final AtomicLong transmittedFrames = new AtomicLong();
@@ -92,8 +93,8 @@ public final class MavlinkTransport {
         mocapExpectedDroneId = resolveMocapExpectedDroneId(
             System.getProperty("mini_drone.mocap.expected_drone_id")
         );
-        mocapControlServer = new MocapControlServer(mocapControlPort);
-        autopilot = new VirtualAutopilot(server, droneManager, outbound::add);
+        mocapControlServer = new MocapControlServer(mocapControlPort, forwardingHold);
+        autopilot = new VirtualAutopilot(server, droneManager, outbound::add, forwardingHold);
     }
 
     public void start() {
@@ -154,7 +155,8 @@ public final class MavlinkTransport {
             mocapHealthEnabled.get(),
             mocapExpectedDroneId,
             mocapControlPort,
-            mocapControlServer.isBound()
+            mocapControlServer.isBound(),
+            forwardingHold.held()
         );
     }
 
@@ -314,7 +316,8 @@ public final class MavlinkTransport {
         String payload = mocapHealthPayload(
             state,
             System.currentTimeMillis() * 1000L,
-            mocapExpectedDroneId
+            mocapExpectedDroneId,
+            forwardingHold
         );
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(
@@ -337,7 +340,8 @@ public final class MavlinkTransport {
     static String mocapHealthPayload(
         VirtualDroneSnapshot state,
         long wallTimeUnixUs,
-        String expectedDroneId
+        String expectedDroneId,
+        ForwardingHold forwardingHold
     ) {
         return String.format(
             Locale.ROOT,
@@ -352,11 +356,14 @@ public final class MavlinkTransport {
                 + "\"expected_drone_id\":%s,\"tracking_age_ms\":0.0,"
                 + "\"forward_rate_hz\":%s,\"orientation_held\":false,"
                 + "\"tracking_holdover_active\":false,"
+                + "\"forwarding_held\":%s,\"forwarding_hold_reason\":%s,"
                 + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
             wallTimeUnixUs,
             jsonString(expectedDroneId),
             Double.toString(1000.0 / MOCAP_HEALTH_PERIOD_MS),
+            forwardingHold.held(),
+            jsonString(forwardingHold.reason()),
             state.northM(),
             state.eastM(),
             state.downM(),

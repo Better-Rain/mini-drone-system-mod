@@ -13,13 +13,14 @@ class MavlinkLinkStatusTest {
     void classifiesSocketAndFreshBackendStates() {
         MavlinkLinkStatus waiting = new MavlinkLinkStatus(
             true, true, 40123, "127.0.0.1", 14561,
-            0, 0, 20, 0, 0, 1_000, -1, "-", false, ADVERTISED_ID, 18152, false);
+            0, 0, 20, 0, 0, 1_000, -1, "-", false, ADVERTISED_ID, 18152, false, false);
         assertEquals(MavlinkLinkStatus.LinkState.WAITING_FOR_BACKEND, waiting.state());
         assertFalse(waiting.backendFresh(1_001));
 
         MavlinkLinkStatus connected = new MavlinkLinkStatus(
             true, true, 40123, "127.0.0.1", 14561,
-            4, 4, 20, 0, 10_000, 11_000, 0, "127.0.0.1:14561", false, ADVERTISED_ID, 18152, false);
+            4, 4, 20, 0, 10_000, 11_000, 0, "127.0.0.1:14561", false, ADVERTISED_ID, 18152,
+            false, false);
         assertTrue(connected.backendSeen());
         assertTrue(connected.backendFresh(12_000));
         assertEquals(MavlinkLinkStatus.LinkState.CONNECTED, connected.state(12_000));
@@ -27,16 +28,18 @@ class MavlinkLinkStatusTest {
 
         MavlinkLinkStatus down = new MavlinkLinkStatus(
             false, false, 0, "127.0.0.1", 14561,
-            4, 4, 20, 0, 10_000, 11_000, 0, "127.0.0.1:14561", false, ADVERTISED_ID, 18152, false);
+            4, 4, 20, 0, 10_000, 11_000, 0, "127.0.0.1:14561", false, ADVERTISED_ID, 18152,
+            false, false);
         assertEquals(MavlinkLinkStatus.LinkState.DOWN, down.state());
     }
 
     @Test
-    void carriesTheAdvertisedMotionCaptureIdentity() {
+    void carriesTheAdvertisedMotionCaptureIdentityAndForwardingHold() {
         MavlinkLinkStatus status = new MavlinkLinkStatus(
             true, true, 40123, "127.0.0.1", 14561,
-            0, 0, 20, 0, 0, 1_000, -1, "-", true, "54", 18152, true);
+            0, 0, 20, 0, 0, 1_000, -1, "-", true, "54", 18152, true, true);
         assertEquals("54", status.mocapExpectedDroneId());
         assertTrue(status.mocapControlBound());
+        assertTrue(status.forwardingHeld());
     }
 }

@@ -96,17 +96,21 @@ $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 
 ### 4.1 请求
 
-backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON：
+backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当前有四条：
 
-```text
-VLT_RELAY_STATUS_V1
-```
+| 请求 | 何时发出 | 模组行为 |
+| --- | --- | --- |
+| `VLT_RELAY_STATUS_V1` | 发现流程、选中源后的只读探测、每 4 秒的前端刷新 | 回显当前状态，不改动任何状态 |
+| `VLT_RELAY_RECONNECT_V1` | 操作员要求重新连接动捕源 | 回显 `reconnect`，并**解除**转发保持 |
+| `VLT_RELAY_HOLD_FORWARDING_V1` | `disconnect_mavlink_drone` 移除了最后一条链路、且飞行器未解锁 | 暂停位置转发 |
+| `VLT_RELAY_RESUME_FORWARDING_V1` | `connect_mavlink_drone` 取回链路时（在端点校验之前） | 恢复位置转发 |
 
-重新连接探测使用：
+`HOLD`/`RESUME` 是主项目 1.1.0 之后新增的。真机 relay 收到 `HOLD` 会暂停组播位姿；**模组本身就是飞控**，
+所以等价语义是"不再接受新的位置/速度设定点"——已经接受的目标继续执行，和真机继续飞向最后一个设定点一致。
+模式切换、解锁和降落不受保持影响，操作员任何时候都能把飞机放下来。
 
-```text
-VLT_RELAY_RECONNECT_V1
-```
+**必须应答 `HOLD`/`RESUME`**：backend 只看 `ok=true`，不应答就等同于超时，会被报告成
+`mocap.forwarding_hold_failed` 并写一条 warning 事件——一个完全正常的源会因此看起来像故障。
 
 模组应在收到未知命令时忽略，不要让控制线程退出。允许兼容结尾换行，但发送方当前不依赖换行。
 
@@ -124,7 +128,8 @@ VLT_RELAY_RECONNECT_V1
   "action": "status",
   "message": "virtual motion-capture source is online",
   "source_packet_age_ms": 0,
-  "safety_latched": false
+  "safety_latched": false,
+  "forwarding_held": false
 }
 ```
 
@@ -132,10 +137,11 @@ VLT_RELAY_RECONNECT_V1
 
 - `schema`：必填且固定值。
 - `ok`：必填布尔值；服务在线且可以提供当前状态时为 `true`。
-- `action`：`status` 或 `reconnect`，应回显实际处理的动作。
+- `action`：`status`、`reconnect`、`hold` 或 `resume`，应回显实际处理的动作。
 - `message`：供前端诊断显示的简短文本。
 - `source_packet_age_ms`：最近位姿数据年龄；刚启动但还没有数据时可以为 `null`。
-- `safety_latched`：当前是否处于安全锁存。没有锁存时为 `false`。
+- `safety_latched`：当前是否处于安全锁存。没有锁存时为 `false`。**转发保持不是安全锁存**，两者独立。
+- `forwarding_held`：应用本次请求之后转发是否处于保持；`status` 探测必须回显当前值而不是无条件 `false`。
 
 控制响应只用于发现和状态探测，不要在这里加入无人机 ID、MAVLink system/component ID 或飞行命令。
 
@@ -177,6 +183,8 @@ VLT_RELAY_RECONNECT_V1
   "forward_rate_hz": 20.0,
   "orientation_held": false,
   "tracking_holdover_active": false,
+  "forwarding_held": false,
+  "forwarding_hold_reason": "",
   "last_forwarded_pose": {
     "position_m": [0.0, 0.0, 0.0],
     "roll_pitch_yaw_rad": [0.0, 0.0, 0.0]
@@ -188,6 +196,9 @@ VLT_RELAY_RECONNECT_V1
 
 - backend 只接受来自回环地址的健康信标。
 - `healthy=true` 且 `safety_latched=false` 才表示可用源。
+- `forwarding_held` / `forwarding_hold_reason` 与 relay 保持同名字段语义：表示位置转发是否被 `HOLD` 暂停。
+  它**不是** `safety_latched`，也不应让 `healthy` 变 `false`——否则 backend 会连非位置命令一起拒绝。
+  被保持时模组仍然照常发信标。
 - 如果 backend 的 MAVLink adapter 配置了 `expected_drone_id`，模组广告的值必须与其**逐字相同**。
   backend 做的是文本比较：非字符串广告值先被转成文本（`54` → `"54"`）再比较，因此
   "整数的 MAVLink system ID" 只有在该配置值本身就是 `"54"` 时才匹配，见 §2.1。
@@ -349,6 +360,7 @@ mavlink.mocap_health.listener_ready
 | 位置命令**只在飞行中被拒**（悬停正常） | 信标周期与飞行速度的乘积超过 backend 的 0.10 m 一致性窗口，见 §5；确认模组按 50 ms 发信标 |
 | 命令被拒 `external_nav_horizontal_fusion_unstable`，其余都正常 | 后端还没收齐 `EK3_SRC1_*` 参数（会话建立后约 6 秒）——确认模组在响应 `PARAM_REQUEST_READ`，见 §6.2 |
 | PVA 下发但虚拟飞机不动 | 检查该帧的 `type_mask` 是否只用了被支持的通道；模组逐位解析，但"全忽略"的帧会被拒绝（见 §6.1） |
+| 断开链路时出现 `mocap.forwarding_hold_failed` | 模组没有应答 `VLT_RELAY_HOLD_FORWARDING_V1`（回环地址、schema、`ok=true`），见 §4.1 |
 
 ## 10. 修改边界
 
@@ -362,9 +374,9 @@ mavlink.mocap_health.listener_ready
 模组侧必须保持：
 
 - `mini_drone.mocap.enabled` 的显式开关；
-- `127.0.0.1:18152` 控制探测兼容性；
+- `127.0.0.1:18152` 控制探测兼容性，以及 `HOLD`/`RESUME` 的应答；
 - `mocap_relay_control_v1` 和 `mocap_relay_health_v1` schema；
-- 健康信标的周期性发送和安全字段；
+- 健康信标的周期性发送、`expected_drone_id` 和安全字段；
 - MAVLink v1 身份、消息 ID、CRC 和 Local NED 语义。
 
 本阶段不要在模组中加入第二个 backend，也不要把动捕源控制接口绑定到某个无人机槽位。无人机绑定属于 MAVLink adapter 配置；动捕源控制服务只回答“源是否在线以及当前状态”。
