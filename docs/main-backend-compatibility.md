@@ -56,6 +56,11 @@ Electron 前端 <-> WebSocket <-> 同一个 C++ backend
 §2.1 的身份比较方式、§4 的控制指令集合、§5 的信标字段、§6.1 的 `type_mask` 处理、§6.2 的准入判据。
 `scripts/verify-contract.mjs` 正是为这件事准备的——它能直接跑出上面这些是否还对得上。
 
+**尚未具备的能力**：在前端选中虚拟源**不会**把命令门禁或飞机链路指过去（源管理层与适配器层是两套配置），
+所以现在还必须在后端启动参数或 `backend-config.json` 里把适配器的 mocap 端口与飞机端点指到模组。
+补齐这件事的需求与验收标准见
+[`main-project-request-virtual-source-switch.md`](main-project-request-virtual-source-switch.md)。
+
 ## 2. 默认端口和地址
 
 以下配置适用于同一台 Windows 主机上的隔离联调。所有动捕控制和健康端口目前只允许回环地址。
