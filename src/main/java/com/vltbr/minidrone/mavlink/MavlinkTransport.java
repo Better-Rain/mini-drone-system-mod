@@ -97,7 +97,9 @@ public final class MavlinkTransport {
             System.getProperty("mini_drone.mocap.expected_drone_id")
         );
         mocapControlServer = new MocapControlServer(mocapControlPort, forwardingHold);
-        autopilot = new VirtualAutopilot(server, droneManager, outbound::add, forwardingHold);
+        // The autopilot runs commands on the server thread, but only needs an
+        // executor: that keeps it free of game classes and testable.
+        autopilot = new VirtualAutopilot(server::execute, droneManager, outbound::add, forwardingHold);
     }
 
     public void start() {

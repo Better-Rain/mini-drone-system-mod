@@ -7,7 +7,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class VirtualDroneManager {
+public final class VirtualDroneManager implements VirtualFlightController {
     private final MinecraftServer server;
     private final VirtualDroneState primaryDrone = new VirtualDroneState(54, 1, "minecraft_drone_01");
     private final AtomicReference<VirtualDroneSnapshot> publishedState = new AtomicReference<>();
@@ -29,28 +29,33 @@ public final class VirtualDroneManager {
         return primaryDrone;
     }
 
+    @Override
     public VirtualDroneSnapshot snapshot() {
         return publishedState.get();
     }
 
+    @Override
     public boolean setMode(int customMode) {
         boolean accepted = primaryDrone.setMode(customMode);
         publish();
         return accepted;
     }
 
+    @Override
     public boolean setArmed(boolean armed) {
         boolean accepted = primaryDrone.setArmed(armed);
         publish();
         return accepted;
     }
 
+    @Override
     public boolean takeoff(double altitudeM) {
         boolean accepted = primaryDrone.takeoff(altitudeM);
         publish();
         return accepted;
     }
 
+    @Override
     public boolean land() {
         boolean accepted = primaryDrone.land();
         publish();
@@ -61,6 +66,7 @@ public final class VirtualDroneManager {
         return setLocalSetpoint(LocalSetpoint.positionOnly(northM, eastM, downM));
     }
 
+    @Override
     public boolean setLocalSetpoint(LocalSetpoint setpoint) {
         boolean accepted = primaryDrone.setLocalSetpoint(setpoint);
         publish();

@@ -2,33 +2,33 @@ package com.vltbr.minidrone.mavlink;
 
 import com.vltbr.minidrone.MiniDroneMod;
 import com.vltbr.minidrone.sim.LocalSetpoint;
-import com.vltbr.minidrone.sim.VirtualDroneManager;
+import com.vltbr.minidrone.sim.VirtualFlightController;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
-import net.minecraft.server.MinecraftServer;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 public final class VirtualAutopilot {
     private static final int MAV_PARAM_TYPE_INT8 = 2;
     private static final int MAV_PARAM_TYPE_REAL32 = 9;
 
-    private final MinecraftServer server;
-    private final VirtualDroneManager droneManager;
+    private final Executor executor;
+    private final VirtualFlightController droneManager;
     private final Consumer<MavlinkOutboundMessage> outbound;
     private final ForwardingHold forwardingHold;
     private final Map<String, Parameter> parameters = new LinkedHashMap<>();
 
     public VirtualAutopilot(
-        MinecraftServer server,
-        VirtualDroneManager droneManager,
+        Executor executor,
+        VirtualFlightController droneManager,
         Consumer<MavlinkOutboundMessage> outbound,
         ForwardingHold forwardingHold
     ) {
-        this.server = server;
+        this.executor = executor;
         this.droneManager = droneManager;
         this.outbound = outbound;
         this.forwardingHold = forwardingHold;
@@ -68,7 +68,7 @@ public final class VirtualAutopilot {
         if (!targetsThisVehicle(command.targetSystem(), command.targetComponent())) {
             return;
         }
-        server.execute(() -> {
+        executor.execute(() -> {
             int result = switch (command.command()) {
                 case MavlinkProtocol.MAV_CMD_DO_SET_MODE -> setMode(Math.round(command.params()[1]));
                 case MavlinkProtocol.MAV_CMD_COMPONENT_ARM_DISARM ->
@@ -109,7 +109,7 @@ public final class VirtualAutopilot {
         if (!targetsThisVehicle(setMode.targetSystem(), 0)) {
             return;
         }
-        server.execute(() -> setMode((int) setMode.customMode()));
+        executor.execute(() -> setMode((int) setMode.customMode()));
     }
 
     private int setMode(int customMode) {
@@ -191,7 +191,7 @@ public final class VirtualAutopilot {
         // frame leaves the operator with a virtual vehicle that simply ignores
         // the command.
         LocalSetpoint setpoint = toLocalSetpoint(target);
-        server.execute(() -> {
+        executor.execute(() -> {
             boolean accepted = droneManager.setLocalSetpoint(setpoint);
             if (!accepted) {
                 MiniDroneMod.LOGGER.debug(
