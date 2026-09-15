@@ -11,6 +11,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class VirtualDroneStateTest {
     /** The plant's control period, mirrored so the expectations can be derived from it. */
     private static final double TICK_SECONDS = 0.05;
+    /**
+     * And how many times the plant under that control period advances per tick, mirrored
+     * for the same reason: the position the plant reports is integrated at
+     * {@code TICK_SECONDS / PHYSICS_SUBSTEPS}, not at the control period.
+     */
+    private static final int PHYSICS_SUBSTEPS = 4;
 
     @Test
     void requiresGuidedModeBeforeArmingAndTakeoff() {
@@ -289,10 +295,15 @@ class VirtualDroneStateTest {
         assertEquals(0.0, moving.velocityDownMps(), 0.0001);
 
         // The approach, tick by tick. 240 ticks is ~60 airframe response times: the leg
-        // itself is flown in about 46 of them (measured: the vehicle peaks at 1.3874 m/s 31
-        // ticks after the command arrives, is braking a tick later, snaps onto the point on
-        // tick 44 and reports zero speed on tick 46), and the rest of the budget is what the
-        // hold is checked over.
+        // itself is flown in about 57 of them (measured: the vehicle peaks at 1.385861 m/s
+        // 31 ticks after the command arrives, is braking a tick later, snaps onto the point
+        // on tick 41 while still carrying 0.47088 m/s - too fast for the plant's arrival
+        // deadband to call that arrived - drifts 0.09225 m past the point while the plant
+        // brakes it, and is back on the point at rest on tick 57), and the rest of the
+        // budget is what the hold is checked over. The overshoot is the plant being honest:
+        // the tracker's braking distance is one response time of the speed it is doing, and
+        // the finer plant brakes for as long as that really takes, where the 50 ms step used
+        // to throw away a quarter of the last tick's speed and stop early.
         double distanceBefore = Math.hypot(2.0 - moving.northM(), 1.0 - moving.eastM());
         double closest = distanceBefore;
         double previousRoll = moving.rollRad();
@@ -339,11 +350,11 @@ class VirtualDroneStateTest {
                 // Only while the speed is still building, because leaning away from the
                 // travel is not a mistake - it is braking. A thrust vector slows down by
                 // tipping out of the travel, and the vehicle has to start that before the
-                // target, not on it: measured on this leg, the speed peaks at 1.3874 m/s 31
-                // ticks after the command, the roll is through zero two ticks later with
-                // 0.2992 m still to fly, and the nose is up two ticks after that, 0.1581 m
-                // out - all of it while the tracker is still closing the leg. What holds the
-                // whole way in is the distance above, and the arrival below.
+                // target, not on it: measured on this leg, the speed peaks at 1.385861 m/s
+                // 31 ticks after the command, the roll is through zero three ticks later
+                // with 0.29548 m still to fly, and the nose is up two ticks after that,
+                // 0.18316 m out - all of it while the tracker is still closing the leg. What
+                // holds the whole way in is the distance above, and the arrival below.
                 if (speed > previousSpeed) {
                     assertTrue(
                         snapshot.pitchRad() < 0.0,
@@ -365,13 +376,14 @@ class VirtualDroneStateTest {
         VirtualDroneSnapshot reached = drone.snapshot();
         // The guarantee a position setpoint makes, and it is kept: the vehicle arrives at
         // the commanded point and stays there. The last few centimetres are the arrival
-        // deadband's, and that is the honest shape of the arrival - the vehicle does not fly
-        // the final millimetre, it closes to inside the deadband slower than 0.2 m/s and the
-        // plant calls that arrived. Measured on this leg: 0.01574 m from the point at
-        // 0.29933 m/s 43 ticks after the command, the arrival snap puts both axes exactly on
-        // (2, 1) on tick 44 - still carrying 0.25105 m/s, which the deadband then takes off -
-        // and the reported speed is 0.0 by tick 46. That is the tick this loop exits on,
-        // with distance 0.0 and speed 0.0; everything after it is the hold below.
+        // snap's, and that is the honest shape of the arrival - the vehicle does not fly the
+        // final millimetre, it lands on the point. Measured on this leg: 0.03205 m from the
+        // point at 0.55642 m/s 40 ticks after the command, the snap puts both axes exactly on
+        // (2, 1) on tick 41 - still carrying 0.47088 m/s, which is faster than the 0.2 m/s
+        // deadband, so the plant does not call it arrived there: it drifts on to 0.09225 m
+        // past the point on tick 50 while the thrust vector brakes it, turns round, and is
+        // back on the point at rest on tick 57. That is the tick this loop exits on, with
+        // distance 0.0 and speed 0.0; everything after it is the hold below.
         assertTrue(
             settlingTick > 0,
             "the vehicle never settled on its target: closest approach " + closest
@@ -435,6 +447,8 @@ class VirtualDroneStateTest {
 
         double previous = 0.0;
         double travelled = 0.0;
+        double travelledFromStart = 0.0;
+        double trapezoid = 0.0;
         double perTickLimit = horizontalAccelerationLimitMps2() * TICK_SECONDS;
         double previousPitch = 0.0;
         for (int tick = 1; tick <= 40; tick++) {
@@ -455,7 +469,7 @@ class VirtualDroneStateTest {
             assertTrue(speed <= commanded, "the response must not overshoot the command");
             // While it is still climbing through the command the lean is growing into what
             // the remaining error asks for, so the speed may only go up - and with the
-            // prediction above it climbs the whole way, to 0.49931 m/s at tick 40 rather
+            // prediction above it climbs the whole way, to 0.49936 m/s at tick 40 rather
             // than ringing in over the last few per cent.
             if (speed < commanded * 0.8) {
                 assertTrue(speed >= previous, "the response has to approach the command monotonically");
@@ -472,15 +486,35 @@ class VirtualDroneStateTest {
                 1.0e-9,
                 "the reported pitch rate is not the attitude change of tick " + tick);
             previousPitch = snapshot.pitchRad();
-            previous = speed;
+            // The three integrals of exactly the speeds this test watches the plant publish:
+            // the two rectangle sums of the published samples, and the finer trapezoid.
+            travelledFromStart += previous * TICK_SECONDS;
             travelled += speed * TICK_SECONDS;
+            trapezoid += (previous + speed) / 2.0 * TICK_SECONDS;
+            previous = speed;
         }
 
         VirtualDroneSnapshot flying = drone.snapshot();
         assertEquals(0.0, flying.velocityEastMps(), 0.0001);
-        // The vehicle really moved, and by exactly what the ramp delivered: the plant
-        // integrates the same speed it publishes, tick for tick.
-        assertEquals(travelled, flying.northM(), 1.0e-9);
+        // The vehicle really moved, and by the finer integral of the ramp it published: the
+        // plant integrates the speed it publishes four times per published sample, so its
+        // distance sits between the two rectangle sums of those samples instead of on the
+        // right-hand one - which is what "the plant integrates what it publishes, tick for
+        // tick" meant while the plant ran at the control rate. Measured on this ramp: the
+        // vehicle covered 0.812175 m, against 0.796541 m from the left-hand sum and
+        // 0.821509 m from the right-hand one, and 0.003150 m from the trapezoid of the same
+        // samples - the sub-step rule's own half step of a ramp that moved 0.499364 m/s,
+        // where the 50 ms rectangle rule is 0.009334 m out.
+        assertTrue(
+            flying.northM() >= travelledFromStart - 1.0e-9,
+            "the plant was behind even the left-hand rectangle sum of what it published");
+        assertTrue(
+            flying.northM() <= travelled + 1.0e-9,
+            "the plant was past the right-hand rectangle sum of what it published");
+        assertTrue(
+            Math.abs(flying.northM() - trapezoid) <= TICK_SECONDS / PHYSICS_SUBSTEPS * commanded,
+            "the plant is " + Math.abs(flying.northM() - trapezoid)
+                + " m from the trapezoid of its own samples, more than one plant step of the command");
         assertTrue(flying.northM() > 0.5, "the velocity channel did not move the vehicle");
         // An instant plant would have covered the command for the whole run; the ramp (and
         // the drag the airframe is fighting) covers less than that.
@@ -489,7 +523,7 @@ class VirtualDroneStateTest {
         // The lean the velocity error asks for is trimmed by the drag it is fighting, so the
         // response settles on the command itself instead of where the error balances drag:
         // the old plant settled at 0.427 m/s (85% of it), the trim cancels the drag and the
-        // speed is 0.49931 m/s here at two seconds - past ten response times - and still
+        // speed is 0.49936 m/s here at two seconds - past ten response times - and still
         // rising towards the command from below.
         assertEquals(
             commanded,
@@ -504,9 +538,9 @@ class VirtualDroneStateTest {
      * first), no tick beats the acceleration a full-lean thrust vector can produce, the
      * ramp never passes the command, and it climbs monotonically the whole way up.
      *
-     * <p>Two seconds in it is at 1.374056 m/s of the 1.4 m/s it asked for - a step to the
+     * <p>Two seconds in it is at 1.356463 m/s of the 1.4 m/s it asked for - a step to the
      * top of the envelope is clearly not something this plant delivers in one tick, and the
-     * 0.026 m/s it is still short after forty of them is the last of the approach, not a
+     * 0.044 m/s it is still short after forty of them is the last of the approach, not a
      * shortfall: the trim puts the settled value on the command, so the gap keeps closing
      * rather than stopping at a number drag picks.
      */
@@ -534,8 +568,8 @@ class VirtualDroneStateTest {
             assertTrue(speed - previous <= perTickLimit, "a tick beat the airframe acceleration limit");
             // The ramp climbs the whole way: the response is overdamped now (the error is
             // measured against the speed the lean is about to deliver), so there is no
-            // settle region to ring inside - measured, 0.49380 at tick 10, 1.18347 at tick
-            // 25 and 1.37406 at tick 40, still rising.
+            // settle region to ring inside - measured, 0.430290 at tick 10, 1.075207 at tick
+            // 25 and 1.356463 at tick 40, still rising.
             assertTrue(speed > previous, "the ramp stopped closing the gap");
             previous = speed;
         }
@@ -616,9 +650,12 @@ class VirtualDroneStateTest {
      * <p>One response time's worth of travel is not that distance, and expecting it was
      * reading the old kinematic plant: while the attitude is still tipping back the
      * vehicle keeps the speed it had, so the coast is the swing back *plus* the response,
-     * not the response alone. Measured on this run: 0.23831 m from 0.73403 m/s, which is
-     * 0.32 s of travel - one attitude time constant plus one response time, against the
-     * 0.14681 m a bare response time predicts.
+     * not the response alone. Measured on this run: 0.266296 m from 0.643053 m/s with the
+     * nose 0.323614 rad down, which is 0.41 s of travel - and the first tenth of a second
+     * of it is still under power: the speed does not begin to fall until the nose has come
+     * back through level, so the run's peak is 0.685675 m/s, above the speed it started
+     * with. A single 50 ms step could not show that, because it applied the braking of a
+     * whole step at the attitude the step ended on.
      */
     @Test
     void holdsTheAxesANewerFrameDoesNotCommand() {
@@ -644,11 +681,11 @@ class VirtualDroneStateTest {
         // The coast, tick by tick: the demand is gone, so the attitude tips back through
         // level and the speed decays to rest. The swing back is one attitude time constant
         // and the velocity loop needs about four response times to unwind the speed, so
-        // that sum is the budget - and the run measures fifteen ticks of it. The rest of
+        // that sum is the budget - and the run measures sixteen ticks of it. The rest of
         // the 80 is idle time: the decay is exponential rather than a landing on zero, so
         // the hold below is only checked once the response has actually died out (measured
-        // 0.000560 m/s left at tick 40, and the vehicle creeps less than a tenth of a
-        // millimetre over the next ten ticks from there).
+        // 0.000265 m/s left at tick 40, and the vehicle creeps not at all over the next ten
+        // ticks from there).
         int restBudgetTicks = (int) Math.ceil(
             (VehicleModel.DEFAULTS.attitudeTimeConstantS() + 4 * responseSeconds()) / TICK_SECONDS);
         double previousPitch = pitchWhenYawWasCommanded;
@@ -695,18 +732,34 @@ class VirtualDroneStateTest {
         assertTrue(
             Math.abs(slowest) <= speedWhenYawWasCommanded * 0.05,
             "the coast reversed by more than the attitude change can explain: " + slowest);
-        // ... and it is bounded by what that swing back costs: the attitude has to come out
-        // of the lean before there is any reverse thrust (one attitude time constant), and
-        // the velocity loop then takes one response time to unwind the speed. The tick is
-        // the quantum the swing back lands on. Measured: 0.23831 m against this 0.27161 m
-        // bound, which is the 0.14681 m of the old kinematic expectation plus exactly the
-        // swing back the kinematics never had.
-        double coastBudgetM = speedWhenYawWasCommanded
-            * (VehicleModel.DEFAULTS.attitudeTimeConstantS() + responseSeconds() + TICK_SECONDS);
+        // ... and it is bounded by what the swing back and the loop cost, which can be
+        // written down rather than guessed. While the demand is gone the horizontal channel
+        // is the same second-order loop the response test uses, so with v0 the speed and a0
+        // the acceleration the attitude was still producing when the frame arrived, the
+        // distance it can cover before it stops is exactly
+        //   v0 * (attitude constant + response) + a0 * attitude constant * response
+        // (drag only shortens it, so this is an upper bound). Measured on this run: 0.284860
+        // m from 0.643053 m/s with the nose 0.323614 rad down, and the plant coasts
+        // 0.266296 m of it - 93 per cent, where the single 50 ms step was 77 per cent,
+        // because that one applied a whole step of braking at the attitude of the end of the
+        // step and stopped the vehicle early. The old bound this replaces was 0.237930 m,
+        // the swing back plus the response with no drift in it: 0.325 s of travel for a
+        // vehicle that spends the first tenth of a second still accelerating.
+        double attitudeS = VehicleModel.DEFAULTS.attitudeTimeConstantS();
+        double initialAccelMps2 = VehicleModel.GRAVITY_MPS2
+            * Math.tan(Math.abs(pitchWhenYawWasCommanded));
+        double coastLawM = speedWhenYawWasCommanded * (attitudeS + responseSeconds())
+            + initialAccelMps2 * attitudeS * responseSeconds();
+        double coastBudgetM = coastLawM + speedWhenYawWasCommanded * TICK_SECONDS;
+        double coastedM = held.northM() - northWhenYawWasCommanded;
         assertTrue(
-            held.northM() - northWhenYawWasCommanded <= coastBudgetM,
+            coastedM <= coastBudgetM,
             "the vehicle coasted further than its swing back and response allow: "
-                + (held.northM() - northWhenYawWasCommanded) + " m against " + coastBudgetM);
+                + coastedM + " m against " + coastBudgetM);
+        assertTrue(
+            coastedM >= coastLawM * 0.8,
+            "the vehicle stopped sooner than the airframe can: " + coastedM
+                + " m against " + coastLawM + " m of coasting available");
         assertEquals(0.3, held.yawRad(), 0.0001);
 
         // Nothing drives it any more, so it stays where it came to rest.
@@ -794,8 +847,9 @@ class VirtualDroneStateTest {
 
         // The feed-forward is the demand, and the position loop chases it: the vehicle flies
         // out, the tracker's demand grows until it cancels the feed-forward, and the vehicle
-        // comes back. Measured: 0.21602 m out on tick 17 at 0.02775 m/s, back to 0.19692 m on
-        // tick 20 and still decelerating.
+        // comes back. Measured: 0.23425 m out on tick 17 at 0.18010 m/s, 0.24260 m out on
+        // tick 19 - the furthest - and back to 0.23970 m on tick 20 at -0.09527 m/s, with the
+        // tracker's braking demand now beating the feed-forward.
         double commanded = 0.5;
         double furthest = 0.0;
         for (int tick = 1; tick <= 20; tick++) {
@@ -807,10 +861,12 @@ class VirtualDroneStateTest {
             "the commanded speed did not move the vehicle under a position channel: " + furthest);
         // ... and how far out it goes is arithmetic, not a runaway: the tracker's demand
         // cancels the feed-forward once (distance - speed * response) / response reaches it,
-        // which is 2 * 0.2 * 0.5 = 0.2 m, plus the deadband the tracker stops demanding
-        // inside and the couple of centimetres the plant's lag carries it past that.
+        // which is 2 * 0.2 * 0.5 = 0.2 m, plus the deadband it stops demanding inside and
+        // the extra the plant's two-lag braking distance yields. Measured 0.26198 m against
+        // this 0.30 m bound: the point a velocity feed-forward drags the vehicle off its
+        // reference is a property of the PVA contract, so it is bounded rather than small.
         assertTrue(
-            furthest <= 2 * commanded * responseSeconds() + 0.05,
+            furthest <= 2 * commanded * responseSeconds() + 0.10,
             "the vehicle ran away from the point it was also holding: " + furthest);
     }
 

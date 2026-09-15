@@ -5,6 +5,31 @@ import com.vltbr.minidrone.mavlink.MavlinkProtocol;
 public final class VirtualDroneState {
     private static final double TICK_SECONDS = 0.05;
     /**
+     * How many times the plant advances per control tick.
+     *
+     * <p>The control loop stays at 20 Hz: the setpoint API, the phase decisions and the
+     * telemetry are all per control tick, and the demanded velocity is computed once and
+     * held for the whole of it. What changes underneath is the integration. A rectangle
+     * rule integrates a changing velocity as a staircase whose tread is the step, so at
+     * the top speed of 1.4 m/s the single 50 ms step biased an acceleration phase by
+     * h/2 * v = 3.5 cm - most of the 5 cm arrival deadband, on every leg. Four sub-steps
+     * of 12.5 ms cut that to h/8 * v = 0.875 cm, and they let the attitude (0.12 s
+     * response, so only ~2.4 samples per step at 20 Hz) develop over ten samples instead
+     * of two. The phase the vehicle is in is still re-evaluated at every sub-step; only
+     * the demand is held.
+     */
+    private static final int PHYSICS_SUBSTEPS = 4;
+    /**
+     * The step the plant is integrating over right now, in seconds.
+     *
+     * <p>It is the control tick whenever the plant loop of {@link #tick()} is not running,
+     * and the control tick divided by {@link #PHYSICS_SUBSTEPS} while it is. Only the places
+     * that advance a state read it: a rate, a time constant, an acceleration limit or any
+     * other per-second quantity is never measured against this, so a finer step buys
+     * accuracy and changes nothing else about the airframe.
+     */
+    private double dt = TICK_SECONDS;
+    /**
      * Top horizontal speed of the default vehicle, in metres per second.
      *
      * <p>Kept as a constant because the health beacon's period has to stay inside the
@@ -31,6 +56,15 @@ public final class VirtualDroneState {
     private static final double ARRIVAL_DEADBAND_M = 0.05;
     /** And how slow it has to be for that to count. */
     private static final double ARRIVAL_SPEED_MPS = 0.20;
+    /**
+     * How many lag times a stop takes.
+     *
+     * <p>Braking runs through the attitude and then the velocity lag, so a stop covers
+     * roughly twice speed * lag rather than speed * lag. The single-lag figure was
+     * close enough for the old kinematic plant, which began braking the moment the
+     * demand dropped; against a real one it carried 9 cm past the commanded point.
+     */
+    private static final double BRAKING_LAG_FACTOR = 2.0;
     private static final double YAW_EPSILON_RAD = 0.001;
     private static final double MAX_HORIZONTAL_DISTANCE_M = 120.0;
     /**
@@ -121,10 +155,64 @@ public final class VirtualDroneState {
             fallSpeedMps = 0.0;
         }
 
+        // The control tick's own decisions are taken here, once, and then held for the
+        // whole tick: the phase above, the envelope bound, and the demand the tracker
+        // produces for it. That is what a real flight controller does between its own
+        // updates, and it is what makes the plant's step an integration detail rather
+        // than a property of the control loop.
+        double[] demand = flightPhase == FlightPhase.FLYING && armed && setpointActive
+            ? planSetpointMotion()
+            : null;
+
+        double rollAtTickStart = rollRad;
+        double pitchAtTickStart = pitchRad;
+
+        // The plant runs finer than the control loop. Every state the plant moves -
+        // attitude, velocity, position, yaw, and the phase integration - is advanced
+        // PHYSICS_SUBSTEPS times over the demand held above.
+        dt = TICK_SECONDS / PHYSICS_SUBSTEPS;
+        for (int subStep = 0; subStep < PHYSICS_SUBSTEPS; subStep++) {
+            stepPlant(demand);
+        }
+        dt = TICK_SECONDS;
+
+        // The attitude rates are published as the change over the control tick, not over
+        // one of the sub-steps it was integrated in: the monitoring side sees one attitude
+        // per tick, so the rate that belongs with it is that tick's. (The yaw rate is the
+        // rate the slew used rather than a measured change, because a yaw setpoint with a
+        // commanded feed-forward rate holds the heading and reports the rate it is fed.)
+        rollRateRadS = (rollRad - rollAtTickStart) / TICK_SECONDS;
+        pitchRateRadS = (pitchRad - pitchAtTickStart) / TICK_SECONDS;
+
+        // Arriving is a control decision, not a plant step: it holds the vehicle on the
+        // point for the rest of the tick rather than letting it creep past it, and it is
+        // taken after the plant has finished moving the vehicle for this tick.
+        if (demand != null) {
+            snapOnArrival();
+        }
+
+        if (armed) {
+            batteryPercent = Math.max(0.0, batteryPercent - 0.0005);
+        }
+    }
+
+    /**
+     * One step of the plant, over whatever {@link #dt} is.
+     *
+     * <p>This is the whole of the physics the control loop drives: the phase the vehicle
+     * is in, the thrust-vector motion when a demand is being flown, the attitude rate loop
+     * and the yaw slew. Everything that is a decision of the control loop lives in
+     * {@link #tick()} instead, so this method only ever reads the state and advances it.
+     *
+     * <p>The phase is re-tested at every sub-step, which is what makes a phase change land
+     * where it physically happened rather than on the next control tick; the demand passed
+     * in does not change within a tick, because the controller computed it once.
+     */
+    private void stepPlant(double[] demand) {
         if (flightPhase == FlightPhase.TAKING_OFF) {
             velocityDownMps = -vehicleModel.climbRateMps();
             double altitudeTarget = position.value(AXIS_DOWN);
-            downM = Math.max(altitudeTarget, downM + velocityDownMps * TICK_SECONDS);
+            downM = Math.max(altitudeTarget, downM + velocityDownMps * dt);
             if (downM <= altitudeTarget + GROUND_EPSILON_M) {
                 downM = altitudeTarget;
                 velocityDownMps = 0.0;
@@ -132,7 +220,7 @@ public final class VirtualDroneState {
             }
         } else if (flightPhase == FlightPhase.LANDING) {
             velocityDownMps = vehicleModel.descentRateMps();
-            downM = Math.min(0.0, downM + velocityDownMps * TICK_SECONDS);
+            downM = Math.min(0.0, downM + velocityDownMps * dt);
             if (downM >= -GROUND_EPSILON_M) {
                 downM = 0.0;
                 velocityDownMps = 0.0;
@@ -142,26 +230,28 @@ public final class VirtualDroneState {
         } else if (flightPhase == FlightPhase.FALLING) {
             fallSpeedMps = Math.min(
                 FALL_TERMINAL_SPEED_MPS,
-                fallSpeedMps + FALL_GRAVITY_MPS2 * TICK_SECONDS
+                fallSpeedMps + FALL_GRAVITY_MPS2 * dt
             );
             velocityDownMps = fallSpeedMps;
-            downM = Math.min(0.0, downM + fallSpeedMps * TICK_SECONDS);
+            downM = Math.min(0.0, downM + fallSpeedMps * dt);
             if (downM >= -GROUND_EPSILON_M) {
                 downM = 0.0;
                 velocityDownMps = 0.0;
                 fallSpeedMps = 0.0;
                 flightPhase = FlightPhase.LANDED;
             }
-        } else if (flightPhase == FlightPhase.FLYING && armed && setpointActive) {
-            updateSetpointMotion();
+        } else if (demand != null) {
+            applyThrustVectorMotion(demand);
+            velocityNorthMps = actuatedVelocityMps[AXIS_NORTH];
+            velocityEastMps = actuatedVelocityMps[AXIS_EAST];
+            velocityDownMps = actuatedVelocityMps[AXIS_DOWN];
+            northM += velocityNorthMps * dt;
+            eastM += velocityEastMps * dt;
+            downM += velocityDownMps * dt;
         }
 
         updateYaw();
         updateAttitude();
-
-        if (armed) {
-            batteryPercent = Math.max(0.0, batteryPercent - 0.0005);
-        }
     }
 
     public boolean setMode(int requestedMode) {
@@ -465,15 +555,20 @@ public final class VirtualDroneState {
     }
 
     /**
-     * Resolves one tick of motion from the active channels.
+     * Resolves the control tick's demand from the active channels.
      *
      * <p>Where the sender commands a position, the virtual vehicle tracks it at a
      * bounded rate, exactly as it did before PVA channels existed. A commanded
      * velocity is fed forward onto that tracking; where the sender ignores the
      * position it becomes the tracked value instead, approached under an
      * acceleration limit. A commanded acceleration integrates into that velocity.
+     *
+     * <p>The answer is returned rather than applied, so that the plant under this loop
+     * can advance several times over one control tick while the demand stays what the
+     * controller asked for: one demand per control tick, held - which is also why the
+     * envelope bound belongs here and is applied once to the value being held.
      */
-    private void updateSetpointMotion() {
+    private double[] planSetpointMotion() {
         boolean trackedNorth = position.active(AXIS_NORTH);
         boolean trackedEast = position.active(AXIS_EAST);
         double trackingNorth = 0.0;
@@ -517,15 +612,7 @@ public final class VirtualDroneState {
             demand(AXIS_DOWN, trackingDown)
         };
         boundToPlantEnvelope(demand);
-        applyThrustVectorMotion(demand);
-
-        velocityNorthMps = actuatedVelocityMps[AXIS_NORTH];
-        velocityEastMps = actuatedVelocityMps[AXIS_EAST];
-        velocityDownMps = actuatedVelocityMps[AXIS_DOWN];
-        northM += velocityNorthMps * TICK_SECONDS;
-        eastM += velocityEastMps * TICK_SECONDS;
-        downM += velocityDownMps * TICK_SECONDS;
-        snapOnArrival();
+        return demand;
     }
 
     /**
@@ -655,9 +742,9 @@ public final class VirtualDroneState {
         return vehicleModel.dragCoefficient() * speed * Math.abs(speed) / vehicleModel.massKg();
     }
 
-    /** One tick of horizontal motion under an acceleration and quadratic drag. */
+    /** One step of horizontal motion under an acceleration and quadratic drag. */
     private double stepWithDrag(double accel, double current) {
-        return current + (accel - dragAccelerationMps2(current)) * TICK_SECONDS;
+        return current + (accel - dragAccelerationMps2(current)) * dt;
     }
 
     /** The vertical channel: thrust left over after the lean holds the vehicle up. */
@@ -665,13 +752,16 @@ public final class VirtualDroneState {
         double mass = vehicleModel.massKg();
         double climbAccel = Math.max(
             0.0, vehicleModel.maxThrustN() * thrustFactor / mass - VehicleModel.GRAVITY_MPS2);
+        // A floor of one control tick, not of one plant step: it is what "the motors
+        // cannot be asked to respond inside one update of the loop that commands them"
+        // means, and it is therefore a property of the controller, not of the integrator.
         double responseS = Math.max(
             TICK_SECONDS,
             vehicleModel.motorTimeConstantS() + vehicleModel.attitudeTimeConstantS());
         double current = actuatedVelocityMps[AXIS_DOWN];
         double accelLimit = target < current ? VehicleModel.GRAVITY_MPS2 : climbAccel;
-        double requested = (target - current) * TICK_SECONDS / responseS;
-        actuatedVelocityMps[AXIS_DOWN] = current + clamp(requested, accelLimit * TICK_SECONDS);
+        double requested = (target - current) * dt / responseS;
+        actuatedVelocityMps[AXIS_DOWN] = current + clamp(requested, accelLimit * dt);
     }
 
     /** The airframe this plant is flying. */
@@ -750,9 +840,13 @@ public final class VirtualDroneState {
         double lagS = Math.max(
             TICK_SECONDS,
             vehicleModel.motorTimeConstantS() + vehicleModel.attitudeTimeConstantS());
-        double brakingDistance = currentSpeed * lagS;
+        double brakingDistance = Math.abs(currentSpeed) * lagS * BRAKING_LAG_FACTOR;
         if (distance <= brakingDistance + ARRIVAL_DEADBAND_M) {
-            return 0.0;
+            // Inside the braking zone there is nothing left to command: the momentum
+            // carries the vehicle to the point. But "nothing" left it stopping short of
+            // the deadband the arrival snap needs, so it creeps in at the speed the snap
+            // accepts instead - slow enough to be caught, fast enough to arrive.
+            return Math.min(ARRIVAL_SPEED_MPS * 0.75, distance / lagS);
         }
         return Math.min(
             vehicleModel.maxHorizontalSpeedMps(),
@@ -830,7 +924,7 @@ public final class VirtualDroneState {
     private void updateYaw() {
         if (!yawSet) {
             if (yawRateSet) {
-                yawRad = wrapToPi(yawRad + yawRateSetpointRadS * TICK_SECONDS);
+                yawRad = wrapToPi(yawRad + yawRateSetpointRadS * dt);
                 yawRateRadS = yawRateSetpointRadS;
             }
             return;
@@ -841,13 +935,13 @@ public final class VirtualDroneState {
         double delta = wrapToPi(yawSetpointRad - yawRad);
         double tracking = Math.abs(delta) > YAW_EPSILON_RAD
             ? Math.copySign(
-                Math.min(MAX_YAW_RATE_RAD_S * TICK_SECONDS, Math.abs(delta)) / TICK_SECONDS,
+                Math.min(MAX_YAW_RATE_RAD_S * dt, Math.abs(delta)) / dt,
                 delta
             )
             : 0.0;
         double feedForward = yawRateSet ? yawRateSetpointRadS : 0.0;
         double rate = clamp(tracking + feedForward, MAX_YAW_RATE_RAD_S);
-        yawRad = wrapToPi(yawRad + rate * TICK_SECONDS);
+        yawRad = wrapToPi(yawRad + rate * dt);
         yawRateRadS = rate;
         if (Math.abs(wrapToPi(yawSetpointRad - yawRad)) <= YAW_EPSILON_RAD) {
             yawRad = wrapToPi(yawSetpointRad);
@@ -873,6 +967,10 @@ public final class VirtualDroneState {
     /**
      * The rate loop: the attitude moves toward a commanded lean with a first-order
      * response, and the rates reported are the ones the integration actually used.
+     *
+     * <p>The reported rates here are the ones this step of the integration used; the
+     * published ones are put back on the control tick by {@link #tick()}, because one
+     * sub-step of a tick is not a rate the monitoring side can observe.
      */
     private void steerTowardTilt(double commandedRoll, double commandedPitch) {
         double responseS = Math.max(TICK_SECONDS, vehicleModel.attitudeTimeConstantS());
@@ -881,13 +979,19 @@ public final class VirtualDroneState {
         double previousPitch = pitchRad;
         rollRateRadS = clamp((commandedRoll - rollRad) / responseS, maxRate);
         pitchRateRadS = clamp((commandedPitch - pitchRad) / responseS, maxRate);
-        rollRad = wrapToPi(rollRad + rollRateRadS * TICK_SECONDS);
-        pitchRad = wrapToPi(pitchRad + pitchRateRadS * TICK_SECONDS);
-        rollRateRadS = (rollRad - previousRoll) / TICK_SECONDS;
-        pitchRateRadS = (pitchRad - previousPitch) / TICK_SECONDS;
+        rollRad = wrapToPi(rollRad + rollRateRadS * dt);
+        pitchRad = wrapToPi(pitchRad + pitchRateRadS * dt);
+        rollRateRadS = (rollRad - previousRoll) / dt;
+        pitchRateRadS = (pitchRad - previousPitch) / dt;
     }
 
-    /** How fast the attitude may move: the lean limit reached in the response time. */
+    /**
+     * How fast the attitude may move: the lean limit reached in the response time.
+     *
+     * <p>A per-second limit, so it is measured against the response time - with a floor
+     * of one control tick, since a loop that updates at 20 Hz cannot ask for a lean it
+     * would have to reach in less than one of its own updates.
+     */
     private double maxAttitudeRateRadS() {
         return vehicleModel.maxTiltRad() / Math.max(TICK_SECONDS, vehicleModel.attitudeTimeConstantS());
     }
