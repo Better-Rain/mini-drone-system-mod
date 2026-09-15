@@ -467,6 +467,8 @@ public final class MavlinkTransport {
                 + "\"tracking_holdover_active\":false,"
                 + "%s"
                 + "\"forwarding_held\":%s,\"forwarding_hold_reason\":%s,"
+                + "\"last_source_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
+                + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]},"
                 + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
             wallTimeUnixUs,
@@ -475,6 +477,18 @@ public final class MavlinkTransport {
             fieldBlock,
             forwardingHold.held(),
             jsonString(forwardingHold.reason()),
+            // Room-facing source frame: the mo-cap axes are opposite to NED
+            // east/north and z points up, which is exactly what the main project's
+            // panel and scene mapping expect of `last_source_pose`
+            // (source (x, y, z) -> world (x, z, y)). The virtual source has no
+            // separate marker, so its attitude is the controller's measurement - the
+            // same values the forwarded pose carries.
+            -state.eastM(),
+            -state.northM(),
+            -state.downM(),
+            state.rollRad(),
+            state.pitchRad(),
+            state.yawRad(),
             state.northM(),
             state.eastM(),
             state.downM(),

@@ -9,6 +9,13 @@ public final class VirtualDroneState {
     private static final double HORIZONTAL_SPEED_MPS = HORIZONTAL_SPEED_LIMIT_MPS;
     private static final double CLIMB_RATE_MPS = 0.8;
     private static final double DESCENT_RATE_MPS = 0.6;
+    // A disarmed multirotor has no thrust left, so it falls rather than holding
+    // altitude. This is a plain free fall, not the full plant: it exists because
+    // the backend only releases an emergency stop once the flight controller
+    // reports a landed, disarmed vehicle (EmergencyStopReleasePolicy), and a
+    // vehicle parked in the air can never satisfy that.
+    private static final double FALL_GRAVITY_MPS2 = 9.81;
+    private static final double FALL_TERMINAL_SPEED_MPS = 8.0;
     private static final double HORIZONTAL_ACCELERATION_MPS2 = 2.0;
     private static final double VERTICAL_ACCELERATION_MPS2 = 1.0;
     private static final double MAX_YAW_RATE_RAD_S = 1.5;
@@ -49,6 +56,8 @@ public final class VirtualDroneState {
     private double pitchRateRadS;
     private double yawRateRadS;
     private double batteryPercent = 100.0;
+    /** Descent speed built up while falling after an in-flight disarm. */
+    private double fallSpeedMps;
 
     public VirtualDroneState(int systemId, int componentId, String droneId) {
         this.systemId = systemId;
@@ -78,6 +87,19 @@ public final class VirtualDroneState {
                 downM = 0.0;
                 velocityDownMps = 0.0;
                 armed = false;
+                flightPhase = FlightPhase.LANDED;
+            }
+        } else if (flightPhase == FlightPhase.FALLING) {
+            fallSpeedMps = Math.min(
+                FALL_TERMINAL_SPEED_MPS,
+                fallSpeedMps + FALL_GRAVITY_MPS2 * TICK_SECONDS
+            );
+            velocityDownMps = fallSpeedMps;
+            downM = Math.min(0.0, downM + fallSpeedMps * TICK_SECONDS);
+            if (downM >= -GROUND_EPSILON_M) {
+                downM = 0.0;
+                velocityDownMps = 0.0;
+                fallSpeedMps = 0.0;
                 flightPhase = FlightPhase.LANDED;
             }
         } else if (flightPhase == FlightPhase.FLYING && armed && setpointActive) {
@@ -110,7 +132,17 @@ public final class VirtualDroneState {
         armed = requestedArmed;
         if (!requestedArmed) {
             clearSetpoint();
-            flightPhase = downM < -GROUND_EPSILON_M ? FlightPhase.FLYING : FlightPhase.LANDED;
+            if (downM < -GROUND_EPSILON_M) {
+                // Disarmed in flight (an emergency stop, or any forced disarm): the
+                // vehicle loses its thrust and falls to the ground. Hovering here
+                // instead would leave it airborne forever with no way to recover -
+                // the backend refuses to release an emergency stop until the flight
+                // controller reports ON_GROUND, and it never would.
+                flightPhase = FlightPhase.FALLING;
+                fallSpeedMps = 0.0;
+            } else {
+                flightPhase = FlightPhase.LANDED;
+            }
         }
         return true;
     }
@@ -121,6 +153,7 @@ public final class VirtualDroneState {
             return false;
         }
         clearSetpoint();
+        fallSpeedMps = 0.0;
         position.set(AXIS_DOWN, true, -altitudeM);
         flightPhase = FlightPhase.TAKING_OFF;
         return true;
@@ -132,6 +165,7 @@ public final class VirtualDroneState {
         if (!armed && flightPhase == FlightPhase.LANDED) {
             return true;
         }
+        fallSpeedMps = 0.0;
         flightPhase = FlightPhase.LANDING;
         return true;
     }
@@ -487,6 +521,8 @@ public final class VirtualDroneState {
         LANDED,
         TAKING_OFF,
         FLYING,
-        LANDING
+        LANDING,
+        /** Disarmed in the air: no thrust, falling to the ground. */
+        FALLING
     }
 }

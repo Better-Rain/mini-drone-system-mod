@@ -1,5 +1,6 @@
 package com.vltbr.minidrone.sim;
 
+import com.vltbr.minidrone.mavlink.MavlinkMessages;
 import com.vltbr.minidrone.mavlink.MavlinkProtocol;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,58 @@ class VirtualDroneStateTest {
         assertTrue(airborne.airborne());
         assertFalse(airborne.takingOff());
         assertEquals(-1.0, airborne.downM(), 0.0001);
+    }
+
+    /**
+     * A forced disarm in flight is what an emergency stop does
+     * (MAV_CMD_COMPONENT_ARM_DISARM with param1 = 0). The virtual plant used to
+     * keep such a vehicle hovering forever, and the backend refuses to release an
+     * emergency stop until the flight controller reports ON_GROUND - so the
+     * release never became possible. The vehicle has to come down on its own.
+     */
+    @Test
+    void fallsToTheGroundWhenDisarmedInFlight() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+        drone.setArmed(true);
+        drone.takeoff(3.0);
+        for (int tick = 0; tick < 100; tick++) {
+            drone.tick();
+        }
+        assertEquals(-3.0, drone.snapshot().downM(), 0.0001);
+        assertTrue(drone.snapshot().airborne());
+
+        assertTrue(drone.setArmed(false));
+        assertFalse(drone.snapshot().armed());
+
+        int ticksToGround = 0;
+        while (drone.snapshot().airborne() && ticksToGround < 200) {
+            drone.tick();
+            ticksToGround++;
+        }
+
+        assertTrue(ticksToGround < 200, "the disarmed vehicle never reached the ground");
+        // The reported landed state flips on the same centimetre-scale epsilon
+        // LANDING uses, so the plant settles onto the ground a couple of ticks
+        // later; that window is exactly why the release path waits for a fresh
+        // report instead of trusting the first one.
+        for (int tick = 0; tick < 20; tick++) {
+            drone.tick();
+        }
+        VirtualDroneSnapshot landed = drone.snapshot();
+        assertFalse(landed.airborne());
+        assertEquals(0.0, landed.downM(), 0.0001);
+        assertEquals(0.0, landed.velocityDownMps(), 0.0001);
+        // The backend reads this byte for its ON_GROUND precondition.
+        assertEquals(1, MavlinkMessages.extendedSysState(landed)[1]);
+
+        // ... and the operator can fly again after that.
+        assertTrue(drone.setArmed(true));
+        assertTrue(drone.takeoff(1.0));
+        for (int tick = 0; tick < 40; tick++) {
+            drone.tick();
+        }
+        assertTrue(drone.snapshot().airborne());
     }
 
     @Test

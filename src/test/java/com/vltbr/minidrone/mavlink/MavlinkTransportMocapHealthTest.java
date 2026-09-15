@@ -39,6 +39,11 @@ class MavlinkTransportMocapHealthTest {
                 + "\"forward_rate_hz\":20.0,\"orientation_held\":false,"
                 + "\"tracking_holdover_active\":false,"
                 + "\"forwarding_held\":false,\"forwarding_hold_reason\":\"\","
+                // Room-facing source frame: (x, y, z) = (-east, -north, up). The
+                // panel reads z as altitude and the scene maps (x, z, y) to world,
+                // so this block and the NED one describe the same point.
+                + "\"last_source_pose\":{\"position_m\":[2.500000,-1.250000,-0.750000],"
+                + "\"roll_pitch_yaw_rad\":[0.040000,-0.050000,0.060000]},"
                 + "\"last_forwarded_pose\":{\"position_m\":[1.250000,-2.500000,0.750000],"
                 + "\"roll_pitch_yaw_rad\":[0.040000,-0.050000,0.060000]}}",
             MavlinkTransport.mocapHealthPayload(

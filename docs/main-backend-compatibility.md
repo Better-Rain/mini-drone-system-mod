@@ -249,6 +249,10 @@ backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当
   "field_update_wall_time_unix_us": 1789457001797000,
   "forwarding_held": false,
   "forwarding_hold_reason": "",
+  "last_source_pose": {
+    "position_m": [0.0, 0.0, 0.0],
+    "roll_pitch_yaw_rad": [0.0, 0.0, 0.0]
+  },
   "last_forwarded_pose": {
     "position_m": [0.0, 0.0, 0.0],
     "roll_pitch_yaw_rad": [0.0, 0.0, 0.0]
@@ -287,6 +291,24 @@ backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当
 
 实现注意：`ArenaOrigin.centeredTransform()` 是不依赖 Minecraft 世界类的纯算术，由单测固定；
 信标负载由 `MavlinkTransport.mocapHealthPayload(..., MocapFieldMetadata)` 生成，同样有单测。
+
+### 5.3 两个位姿块的分工（`last_source_pose` / `last_forwarded_pose`）
+
+模组现在同时发这两块，语义与 relay 一致：
+
+| 块 | 坐标系 | 用途 |
+| --- | --- | --- |
+| `last_source_pose.position_m` | **房间朝向轴系**：`(x, y, z) = (−east, −north, up)` | 主项目前端**优先用它**：机型面板的 X/Y/高度、"动捕 (…)" 矢量、以及场景映射 `(x, z, y) → world`。它与 NED 块描述**同一个点**（`world = (−east, −down, −north)` 两边一致） |
+| `last_forwarded_pose.position_m` | Local NED：`[north, east, down]` | 后端的一致性判据（信标位姿 vs `LOCAL_POSITION_NED`，窗口 0.10 m） |
+
+虚拟源没有独立的 marker，所以两块的 `roll_pitch_yaw_rad` 是同一个测量值（飞控姿态）；主项目只用它做诊断，
+前端显示的姿态始终来自 `ATTITUDE`（消息 30）。
+
+### 5.4 场地元数据消失 = 前端要撤销场地
+
+`arena clear` 之后模组**不再发** `field_*`。主项目把这当成状态变化而不是"没更新"：
+前端会把场地恢复成操作员自己设置的尺寸（没设置过就回到内置默认），并打日志
+"动捕场地元数据已撤销，恢复本机设置的场地尺寸"。所以清掉训练场不会留下一个"飞机其实没在里面飞"的 13 m 场地。
 
 实现注意事项：
 
@@ -396,6 +418,29 @@ Minecraft world.z = -north
 另外：**起飞序列要求飞行器在确认 indoor Home/Global Origin 之前保持未解锁**。后端在 `awaiting_origin`
 阶段一旦发现已解锁就以 `origin_setup_armed_unexpectedly` 结束，所以先点前端「解锁」再点「起飞」不会起飞；
 直接用「起飞」按钮走完 请求 origin → GUIDED → ARM → NAV_TAKEOFF。
+
+### 6.2b 飞行中上锁 = 自由落体（急停能解除的前提）
+
+主项目的急停就是一条**强制上锁**命令：`MAV_CMD_COMPONENT_ARM_DISARM`，`param1 = 0`（`param2 = 21196`）。
+虚拟飞控过去在这种情况把飞机"停"在空中：`armed=false` 但 `down` 不变。这有两个后果：
+
+1. 游戏里看起来像悬停（模组本来没有重力模型，可以理解）；
+2. **解除急停永远不可能成功**——后端 `EmergencyStopReleasePolicy` 要求
+   `disarmed && landed_state_fresh && landed`（`MAV_LANDED_STATE_ON_GROUND`）才放行，
+   而悬停的飞机一直报 `IN_AIR`，于是操作员会看到"点了释放没反应"。
+
+现在的语义：飞行中一旦上锁，飞机失去推力，按重力加速下坠（最高 8 m/s），触地后
+`down = 0`、落地状态转为 `ON_GROUND`，随后：
+
+```text
+emergency_stop        -> 强制上锁，飞机下坠到地面
+release_emergency_stop-> 需要 disarmed + 新鲜的 ON_GROUND（另有 5 秒安全锁）→ completed
+takeoff               -> 重新 GUIDED → ARM → 起飞
+```
+
+实测（虚拟源，3 m 起飞后急停）：下坠约 **0.8 s** 触地，释放回执里
+`landed=true, landed_state=1, landed_state_fresh=true`，之后 `takeoff` 正常爬到 2.5 m。
+这是"不是完整物理模型但结果正确"的最小实现：只做竖直自由落体，不做水平动量、不做姿态失稳。
 
 ### 6.3 坐标链与单位（1 方块 = 1 米）
 
