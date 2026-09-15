@@ -243,6 +243,10 @@ backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当
   "forward_rate_hz": 20.0,
   "orientation_held": false,
   "tracking_holdover_active": false,
+  "field_size_m": [13.0, 13.0],
+  "field_centered_at_world_origin": true,
+  "field_protocol_version": 1,
+  "field_update_wall_time_unix_us": 1789457001797000,
   "forwarding_held": false,
   "forwarding_hold_reason": "",
   "last_forwarded_pose": {
@@ -251,6 +255,38 @@ backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当
   }
 }
 ```
+
+### 5.1 训练场元数据（`field_*`）
+
+主项目前端会在 `adapter.status` 里读这四个字段并**自动**把场地画成对应尺寸
+（日志："场地尺寸已从动捕同步：13.00m × 13.00m"）。真机 relay 也是这么发的，
+虚拟源以前缺这一段，于是即使飞机在场地里飞，前端画的还是它自己的场地。
+
+| 字段 | 值 | 说明 |
+| --- | --- | --- |
+| `field_size_m` | `[13.0, 13.0]` | 场地宽 × 深（米）。模组里由 `TrainingArenaLayout.sizeM()` 推：`2*RADIUS+1`，1 方块 = 1 米 |
+| `field_centered_at_world_origin` | `true` | 场地中心**就是**虚拟世界原点。主项目只信这一种场地；为 `false` 时它会忽略整段 |
+| `field_protocol_version` | `1` | 场地元数据契约版本（`MocapFieldMetadata.CURRENT_PROTOCOL_VERSION`） |
+| `field_update_wall_time_unix_us` | 创建/载入时间 | "这份场地定义是什么时候确立的"。场地变更或世界载入时刷新一次，其余时间保持不变（与 relay 的语义一致） |
+
+**没有训练场时不发这四个字段**（`MocapFieldMetadata` 为 null）：此时原点是"玩家前方 2 格"，
+去声明一个"以原点为中心的 13 m 场地"是假的，只会把操作员看到的场地画到没有飞机去过的地方。
+
+### 5.2 原点和场地必须重合
+
+主项目把"场地中心"和"命令用的 Local NED 原点"当成同一个点，所以有训练场时：
+
+- 虚拟世界原点 = **场地中心垫面**：X/Z 取垫子方块中心（`centerX+0.5` / `centerZ+0.5`，即 13×13 的几何中心），
+  Y 取表面层上方一格（`topY + 1`，静止无人机 `down=0` 的位置）；
+- 于是 `LOCAL_POSITION_NED (0,0,0)` = 场地中心的降落垫，飞机相对场地的位置与前端画的场地一致；
+- 无人机实体也生成在这个原点（不再"在玩家前方 2 格"）；
+- 没有训练场时才退回"玩家前方 2 格"的便利原点。
+
+`/minidrone origin set` 在有训练场时同样按场地中心重算（并打日志说明用的是哪条规则），
+`/minidrone arena create` / `arena clear` 会立刻切换规则并重新广播（或清空）场地元数据。
+
+实现注意：`ArenaOrigin.centeredTransform()` 是不依赖 Minecraft 世界类的纯算术，由单测固定；
+信标负载由 `MavlinkTransport.mocapHealthPayload(..., MocapFieldMetadata)` 生成，同样有单测。
 
 实现注意事项：
 
@@ -391,6 +427,9 @@ backend 的偏移量只对发过 `GLOBAL_POSITION_INT` 的车辆生效（用它�
 姿态：模组把 NED 欧拉角原样放进 `ATTITUDE`（消息 30），backend 转成 NED 四元数发布；前端再用
 `mavlinkNedQuaternionToSceneQuaternion` 换到场景系。`NedWorldTransform` 里那个
 `180 − yaw°` 只用于 **Minecraft 实体自身的朝向渲染**，不参与遥测，也不要拿它去核对前端显示的航向。
+
+坐标链里"原点在哪"由 §5.2 决定：有训练场时 `NED (0,0,0)` 是场地中心垫面，场地元数据同时告诉前端
+场地就是 13×13 m 且以该原点为中心，三者（实体、NED、前端场地）因此重合。
 
 ## 7. 发现流程和“在线”条件
 

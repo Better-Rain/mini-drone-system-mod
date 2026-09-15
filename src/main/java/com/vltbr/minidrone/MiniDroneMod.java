@@ -2,10 +2,13 @@ package com.vltbr.minidrone;
 
 import com.vltbr.minidrone.mavlink.MavlinkTransport;
 import com.vltbr.minidrone.mavlink.MavlinkLinkStatus;
+import com.vltbr.minidrone.mavlink.MocapFieldMetadata;
 import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
+import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.TrainingArenaController;
+import com.vltbr.minidrone.world.TrainingArenaLayout;
 import com.vltbr.minidrone.world.VirtualMocapSettingsSavedData;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -65,8 +68,8 @@ public final class MiniDroneMod implements ModInitializer {
         );
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            droneManager = new VirtualDroneManager(server);
             trainingArenaController = new TrainingArenaController(server);
+            droneManager = new VirtualDroneManager(server, trainingArenaController);
             mocapSettings = server.overworld().getDataStorage().computeIfAbsent(
                 VirtualMocapSettingsSavedData.factory(),
                 VirtualMocapSettingsSavedData.DATA_ID
@@ -75,6 +78,7 @@ public final class MiniDroneMod implements ModInitializer {
             if (mocapSettings.enabled()) {
                 mavlinkTransport.setMocapEnabled(true);
             }
+            publishFieldMetadata();
             mavlinkTransport.start();
             LOGGER.info("Mini Drone System virtual flight controller started");
         });
@@ -104,6 +108,43 @@ public final class MiniDroneMod implements ModInitializer {
 
     public static ResourceLocation id(String path) {
         return ResourceLocation.fromNamespaceAndPath(MOD_ID, path);
+    }
+
+    /**
+     * Advertises the training arena in the motion-capture health beacon.
+     *
+     * <p>The main project draws its field from these values, and only trusts a
+     * field centred on the controller's local NED origin - which is exactly what
+     * {@link DroneWorldController} makes the arena centre. With no arena there is
+     * nothing to advertise, so the metadata is cleared and the backend keeps its
+     * own field: claiming a 13 m arena the drone is not actually flying in would
+     * put the whole scene in the wrong place.
+     */
+    private void publishFieldMetadata() {
+        if (mavlinkTransport == null) {
+            return;
+        }
+        if (trainingArenaController == null || !trainingArenaController.hasArena()) {
+            mavlinkTransport.setFieldMetadata(null);
+            return;
+        }
+        var info = trainingArenaController.info();
+        int size = TrainingArenaLayout.sizeM();
+        mavlinkTransport.setFieldMetadata(new MocapFieldMetadata(
+            size,
+            size,
+            true,
+            MocapFieldMetadata.CURRENT_PROTOCOL_VERSION,
+            System.currentTimeMillis() * 1000L
+        ));
+        LOGGER.info(
+            "Advertising training field {}x{} m centred at the virtual origin ({}, {}, {})",
+            size,
+            size,
+            info.centerX(),
+            info.topY(),
+            info.centerZ()
+        );
     }
 
     private int reportStatus(CommandSourceStack source) {
@@ -255,9 +296,15 @@ public final class MiniDroneMod implements ModInitializer {
         }
         var result = trainingArenaController.create(player, requestedCenter);
         switch (result.status()) {
-            case CREATED -> source.sendSuccess(() -> copyableMessage(String.format(
-                "Training arena created at (%d, %d, %d): placed=%d, skipped=%d",
-                result.centerX(), result.topY(), result.centerZ(), result.placed(), result.skipped())), false);
+            case CREATED -> {
+                // The origin rule now follows the arena, and the field it publishes
+                // has to match what the drone will actually fly in.
+                publishFieldMetadata();
+                droneManager.resetFlightOrigin(player);
+                source.sendSuccess(() -> copyableMessage(String.format(
+                    "Training arena created at (%d, %d, %d): placed=%d, skipped=%d",
+                    result.centerX(), result.topY(), result.centerZ(), result.placed(), result.skipped())), false);
+            }
             case ALREADY_EXISTS -> source.sendFailure(
                 Component.literal("A training arena is already recorded in this world. Clear it first."));
             case WRONG_DIMENSION -> source.sendFailure(
@@ -279,6 +326,15 @@ public final class MiniDroneMod implements ModInitializer {
         if (result.status() == TrainingArenaController.ClearStatus.NOT_FOUND) {
             source.sendFailure(Component.literal("No recorded training arena exists in this world."));
             return 0;
+        }
+        // No arena means no field to advertise: the drone keeps flying in front of
+        // the player and the backend has to keep its own field.
+        publishFieldMetadata();
+        try {
+            droneManager.resetFlightOrigin(source.getPlayerOrException());
+        } catch (Exception exception) {
+            // Console or command-block invocation: the next world load picks up the
+            // player-relative rule on its own.
         }
         source.sendSuccess(() -> copyableMessage(String.format(
             "Training arena cleared: removed=%d, preserved_changed=%d",

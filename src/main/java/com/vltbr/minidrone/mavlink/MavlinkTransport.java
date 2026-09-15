@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class MavlinkTransport {
     private static final InetAddress IPV4_LOOPBACK = ipv4Loopback();
@@ -60,6 +61,10 @@ public final class MavlinkTransport {
     private final MocapControlServer mocapControlServer;
     private final VirtualAutopilot autopilot;
     private final ForwardingHold forwardingHold = new ForwardingHold();
+    // Field (training arena) metadata, pushed by the world side: the backend draws
+    // its field from these values and only trusts a field centred on the local NED
+    // origin. Null means this source has no field to publish.
+    private final AtomicReference<MocapFieldMetadata> fieldMetadata = new AtomicReference<>();
     private final AtomicLong receivedPackets = new AtomicLong();
     private final AtomicLong receivedFrames = new AtomicLong();
     private final AtomicLong transmittedFrames = new AtomicLong();
@@ -119,6 +124,19 @@ public final class MavlinkTransport {
         } else if (changed || mocapControlRunning.get()) {
             stopMocapControl();
         }
+    }
+
+    /**
+     * Publishes (or clears) the field metadata this source advertises in every
+     * subsequent health beacon. The backend draws its field from it, so it must
+     * only be set while the arena centre really is the local NED origin.
+     */
+    public void setFieldMetadata(MocapFieldMetadata metadata) {
+        fieldMetadata.set(metadata);
+    }
+
+    public MocapFieldMetadata fieldMetadata() {
+        return fieldMetadata.get();
     }
 
     public void stop() {
@@ -378,7 +396,8 @@ public final class MavlinkTransport {
             state,
             System.currentTimeMillis() * 1000L,
             mocapExpectedDroneId,
-            forwardingHold
+            forwardingHold,
+            fieldMetadata.get()
         );
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(
@@ -404,6 +423,35 @@ public final class MavlinkTransport {
         String expectedDroneId,
         ForwardingHold forwardingHold
     ) {
+        return mocapHealthPayload(state, wallTimeUnixUs, expectedDroneId, forwardingHold, null);
+    }
+
+    /**
+     * Builds the beacon. The field block is omitted entirely when this source has
+     * no arena, because a "centred at the world origin" claim the mod cannot back
+     * would move the operator's field to a place no drone ever flies.
+     */
+    static String mocapHealthPayload(
+        VirtualDroneSnapshot state,
+        long wallTimeUnixUs,
+        String expectedDroneId,
+        ForwardingHold forwardingHold,
+        MocapFieldMetadata field
+    ) {
+        String fieldBlock = field == null
+            ? ""
+            : String.format(
+                Locale.ROOT,
+                "\"field_size_m\":[%.3f,%.3f],"
+                    + "\"field_centered_at_world_origin\":%s,"
+                    + "\"field_protocol_version\":%d,"
+                    + "\"field_update_wall_time_unix_us\":%d,",
+                field.widthM(),
+                field.depthM(),
+                field.centeredAtWorldOrigin(),
+                field.protocolVersion(),
+                field.updatedWallTimeUnixUs()
+            );
         return String.format(
             Locale.ROOT,
             "{\"schema\":\"mocap_relay_health_v1\","
@@ -417,12 +465,14 @@ public final class MavlinkTransport {
                 + "\"expected_drone_id\":%s,\"tracking_age_ms\":0.0,"
                 + "\"forward_rate_hz\":%s,\"orientation_held\":false,"
                 + "\"tracking_holdover_active\":false,"
+                + "%s"
                 + "\"forwarding_held\":%s,\"forwarding_hold_reason\":%s,"
                 + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
             wallTimeUnixUs,
             jsonString(expectedDroneId),
             Double.toString(1000.0 / MOCAP_HEALTH_PERIOD_MS),
+            fieldBlock,
             forwardingHold.held(),
             jsonString(forwardingHold.reason()),
             state.northM(),

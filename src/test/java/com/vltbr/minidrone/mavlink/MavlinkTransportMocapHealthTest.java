@@ -1,12 +1,14 @@
 package com.vltbr.minidrone.mavlink;
 
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
+import com.vltbr.minidrone.world.TrainingArenaLayout;
 import com.vltbr.minidrone.sim.VirtualDroneState;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MavlinkTransportMocapHealthTest {
@@ -126,6 +128,50 @@ class MavlinkTransportMocapHealthTest {
             payload.contains("\"forward_rate_hz\":20.0,"),
             "the beacon must not claim a forwarding rate the transport does not use"
         );
+    }
+
+    /**
+     * The backend draws its field from these four values and refuses to use a
+     * field that is not centred on the local NED origin, so a drone flying inside
+     * the arena must advertise it - otherwise the scene keeps the real room's
+     * field and the drone's position relative to it is meaningless.
+     */
+    @Test
+    void advertisesTheTrainingFieldWhenTheArenaExists() {
+        MocapFieldMetadata field = new MocapFieldMetadata(
+            TrainingArenaLayout.sizeM(),
+            TrainingArenaLayout.sizeM(),
+            true,
+            MocapFieldMetadata.CURRENT_PROTOCOL_VERSION,
+            1787600000000000L
+        );
+
+        String payload = MavlinkTransport.mocapHealthPayload(
+            snapshot(), 0L, "minecraft_drone_01", new ForwardingHold(), field);
+
+        assertTrue(payload.contains("\"field_size_m\":[13.000,13.000],"), payload);
+        assertTrue(payload.contains("\"field_centered_at_world_origin\":true,"), payload);
+        assertTrue(payload.contains("\"field_protocol_version\":1,"), payload);
+        assertTrue(payload.contains("\"field_update_wall_time_unix_us\":1787600000000000,"), payload);
+    }
+
+    @Test
+    void advertisesNoFieldWhenThereIsNoArena() {
+        String payload = MavlinkTransport.mocapHealthPayload(
+            snapshot(), 0L, "minecraft_drone_01", new ForwardingHold(), null);
+
+        assertFalse(payload.contains("field_size_m"), payload);
+        assertFalse(payload.contains("field_centered_at_world_origin"), payload);
+    }
+
+    @Test
+    void rejectsFieldMetadataThatWouldPutTheSceneInTheWrongPlace() {
+        assertThrows(IllegalArgumentException.class, () -> new MocapFieldMetadata(
+            0.0, 13.0, true, MocapFieldMetadata.CURRENT_PROTOCOL_VERSION, 0L));
+        assertThrows(IllegalArgumentException.class, () -> new MocapFieldMetadata(
+            Double.NaN, 13.0, true, MocapFieldMetadata.CURRENT_PROTOCOL_VERSION, 0L));
+        assertThrows(IllegalArgumentException.class, () -> new MocapFieldMetadata(
+            13.0, 13.0, true, 0, 0L));
     }
 
     /**

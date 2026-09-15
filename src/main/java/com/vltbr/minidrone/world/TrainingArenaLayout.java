@@ -10,6 +10,16 @@ import java.util.List;
 public final class TrainingArenaLayout {
     public static final int RADIUS = 6;
 
+    /**
+     * Arena footprint in metres (one block is one metre).
+     *
+     * <p>The arena is square, so this is both its width and its depth, and it is
+     * what the mod advertises as {@code field_size_m}.
+     */
+    public static int sizeM() {
+        return RADIUS * 2 + 1;
+    }
+
     private final int centerX;
     private final int topY;
     private final int centerZ;
