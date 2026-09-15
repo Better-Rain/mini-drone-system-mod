@@ -129,18 +129,17 @@ public final class MiniDroneMod implements ModInitializer {
             return;
         }
         var info = trainingArenaController.info();
-        int size = TrainingArenaLayout.sizeM();
         mavlinkTransport.setFieldMetadata(new MocapFieldMetadata(
-            size,
-            size,
+            info.widthM(),
+            info.depthM(),
             true,
             MocapFieldMetadata.CURRENT_PROTOCOL_VERSION,
             System.currentTimeMillis() * 1000L
         ));
         LOGGER.info(
             "Advertising training field {}x{} m centred at the virtual origin ({}, {}, {})",
-            size,
-            size,
+            info.widthM(),
+            info.depthM(),
             info.centerX(),
             info.topY(),
             info.centerZ()
@@ -301,9 +300,12 @@ public final class MiniDroneMod implements ModInitializer {
                 // has to match what the drone will actually fly in.
                 publishFieldMetadata();
                 droneManager.resetFlightOrigin(player);
+                var created = trainingArenaController.info();
                 source.sendSuccess(() -> copyableMessage(String.format(
-                    "Training arena created at (%d, %d, %d): placed=%d, skipped=%d",
-                    result.centerX(), result.topY(), result.centerZ(), result.placed(), result.skipped())), false);
+                    "Training arena created at (%d, %d, %d): %dx%d m, placed=%d, skipped=%d",
+                    result.centerX(), result.topY(), result.centerZ(),
+                    created.widthM(), created.depthM(),
+                    result.placed(), result.skipped())), false);
             }
             case ALREADY_EXISTS -> source.sendFailure(
                 Component.literal("A training arena is already recorded in this world. Clear it first."));
@@ -364,8 +366,9 @@ public final class MiniDroneMod implements ModInitializer {
             return 0;
         }
         source.sendSuccess(() -> copyableMessage(String.format(
-            "Training arena center=(%d, %d, %d), recorded_blocks=%d",
-            info.centerX(), info.topY(), info.centerZ(), info.recordedBlocks())), false);
+            "Training arena center=(%d, %d, %d), size=%dx%d m, recorded_blocks=%d",
+            info.centerX(), info.topY(), info.centerZ(),
+            info.widthM(), info.depthM(), info.recordedBlocks())), false);
         return 1;
     }
 

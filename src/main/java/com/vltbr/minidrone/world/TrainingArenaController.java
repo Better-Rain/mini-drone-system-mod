@@ -16,7 +16,33 @@ import java.util.List;
 
 public final class TrainingArenaController {
     private static final int UPDATE_FLAGS = Block.UPDATE_ALL;
-    private static final double DEFAULT_FORWARD_DISTANCE = TrainingArenaLayout.RADIUS + 4.0;
+    /** Blocks of flat ground between the player and an arena created in front of them. */
+    private static final double CENTER_MARGIN_BLOCKS = 4.0;
+    // A new arena's half-extent per axis, in blocks: -Dmini_drone.arena.radius_x / _z.
+    // The default keeps the 13 x 13 arena the field protocol and the docs describe.
+    private static final String RADIUS_X_PROPERTY = "mini_drone.arena.radius_x";
+    private static final String RADIUS_Z_PROPERTY = "mini_drone.arena.radius_z";
+    // One setBlock call per surface block: a 49 x 49 arena is already 2401 calls,
+    // and this runs on the server thread.
+    private static final int MAX_RADIUS_BLOCKS = 24;
+
+    private static int configuredRadius(String property) {
+        return clampRadius(Integer.getInteger(property, TrainingArenaLayout.RADIUS));
+    }
+
+    static int clampRadius(int requested) {
+        return Math.max(0, Math.min(requested, MAX_RADIUS_BLOCKS));
+    }
+
+    /** Half-extent along X of a newly created arena, in blocks. */
+    public static int configuredRadiusX() {
+        return configuredRadius(RADIUS_X_PROPERTY);
+    }
+
+    /** Half-extent along Z of a newly created arena, in blocks. */
+    public static int configuredRadiusZ() {
+        return configuredRadius(RADIUS_Z_PROPERTY);
+    }
 
     private final MinecraftServer server;
     private final TrainingArenaSavedData savedData;
@@ -47,7 +73,8 @@ public final class TrainingArenaController {
             return new CreateResult(CreateStatus.INVALID_POSITION, 0, 0);
         }
         TrainingArenaLayout layout = TrainingArenaLayout.centered(
-            center.getX(), center.getY(), center.getZ());
+            center.getX(), center.getY(), center.getZ(),
+            configuredRadiusX(), configuredRadiusZ());
         List<TrainingArenaSavedData.PlacedBlock> placed = new ArrayList<>();
         int skipped = 0;
         for (TrainingArenaLayout.RelativeBlock block : layout.blocks()) {
@@ -106,7 +133,7 @@ public final class TrainingArenaController {
 
     public ArenaInfo info() {
         if (!savedData.hasArena()) {
-            return new ArenaInfo(false, 0, 0, 0, 0);
+            return new ArenaInfo(false, 0, 0, 0, 0, 0, 0);
         }
         TrainingArenaLayout layout = savedData.layout();
         return new ArenaInfo(
@@ -114,6 +141,8 @@ public final class TrainingArenaController {
             layout.centerX(),
             layout.topY(),
             layout.centerZ(),
+            layout.widthM(),
+            layout.depthM(),
             savedData.placedBlocks().size()
         );
     }
@@ -126,8 +155,11 @@ public final class TrainingArenaController {
         } else {
             horizontalLook = horizontalLook.normalize();
         }
-        int targetX = (int) Math.floor(player.getX() + horizontalLook.x * DEFAULT_FORWARD_DISTANCE);
-        int targetZ = (int) Math.floor(player.getZ() + horizontalLook.z * DEFAULT_FORWARD_DISTANCE);
+        // Keep clear of the arena itself, whichever axis is the longer one.
+        double forwardDistance =
+            Math.max(configuredRadiusX(), configuredRadiusZ()) + CENTER_MARGIN_BLOCKS;
+        int targetX = (int) Math.floor(player.getX() + horizontalLook.x * forwardDistance);
+        int targetZ = (int) Math.floor(player.getZ() + horizontalLook.z * forwardDistance);
         // WORLD_SURFACE includes leaves and nearby terrain can be much higher than
         // the player. Use the target column and ignore leaf canopies for the
         // default anchor; explicit coordinates remain available for exact layouts.
@@ -166,5 +198,18 @@ public final class TrainingArenaController {
         }
     }
     public record ClearResult(ClearStatus status, int removed, int preserved) { }
-    public record ArenaInfo(boolean present, int centerX, int topY, int centerZ, int recordedBlocks) { }
+
+    /**
+     * {@code widthM}/{@code depthM} are the footprint the arena actually occupies,
+     * which is what the health beacon advertises as {@code field_size_m}.
+     */
+    public record ArenaInfo(
+        boolean present,
+        int centerX,
+        int topY,
+        int centerZ,
+        int widthM,
+        int depthM,
+        int recordedBlocks
+    ) { }
 }

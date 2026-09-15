@@ -33,6 +33,11 @@ public final class TrainingArenaSavedData extends SavedData {
     private int centerX;
     private int topY;
     private int centerZ;
+    // The footprint is stored with the arena, not read from the JVM properties at
+    // load time: an arena that was built as a rectangle must keep reporting the
+    // size it actually occupies even if the properties change later.
+    private int radiusX = TrainingArenaLayout.RADIUS;
+    private int radiusZ = TrainingArenaLayout.RADIUS;
     private final List<PlacedBlock> placedBlocks = new ArrayList<>();
 
     public static Factory<TrainingArenaSavedData> factory() {
@@ -48,6 +53,14 @@ public final class TrainingArenaSavedData extends SavedData {
         data.centerX = tag.getInt("center_x");
         data.topY = tag.getInt("top_y");
         data.centerZ = tag.getInt("center_z");
+        // Arenas saved before the footprint existed were square at the default
+        // radius, which is exactly what the fallback produces.
+        data.radiusX = tag.contains("radius_x")
+            ? tag.getInt("radius_x")
+            : TrainingArenaLayout.RADIUS;
+        data.radiusZ = tag.contains("radius_z")
+            ? tag.getInt("radius_z")
+            : TrainingArenaLayout.RADIUS;
         ListTag blocks = tag.getList("blocks", Tag.TAG_COMPOUND);
         for (int i = 0; i < blocks.size(); i++) {
             CompoundTag block = blocks.getCompound(i);
@@ -68,7 +81,7 @@ public final class TrainingArenaSavedData extends SavedData {
     }
 
     public TrainingArenaLayout layout() {
-        return TrainingArenaLayout.centered(centerX, topY, centerZ);
+        return TrainingArenaLayout.centered(centerX, topY, centerZ, radiusX, radiusZ);
     }
 
     public List<PlacedBlock> placedBlocks() {
@@ -79,6 +92,8 @@ public final class TrainingArenaSavedData extends SavedData {
         centerX = layout.centerX();
         topY = layout.topY();
         centerZ = layout.centerZ();
+        radiusX = layout.radiusX();
+        radiusZ = layout.radiusZ();
         placedBlocks.clear();
         placedBlocks.addAll(blocks);
         setDirty();
@@ -88,6 +103,8 @@ public final class TrainingArenaSavedData extends SavedData {
         centerX = 0;
         topY = 0;
         centerZ = 0;
+        radiusX = TrainingArenaLayout.RADIUS;
+        radiusZ = TrainingArenaLayout.RADIUS;
         placedBlocks.clear();
         setDirty();
     }
@@ -97,6 +114,8 @@ public final class TrainingArenaSavedData extends SavedData {
         tag.putInt("center_x", centerX);
         tag.putInt("top_y", topY);
         tag.putInt("center_z", centerZ);
+        tag.putInt("radius_x", radiusX);
+        tag.putInt("radius_z", radiusZ);
         ListTag blocks = new ListTag();
         for (PlacedBlock placed : placedBlocks) {
             CompoundTag block = new CompoundTag();

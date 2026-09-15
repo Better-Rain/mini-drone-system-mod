@@ -151,6 +151,22 @@ public final class VirtualSystemSelfTest {
         require(counts.get(TrainingArenaLayout.Kind.LANDING_PAD) == 8L, "landing pad count changed");
         require(counts.get(TrainingArenaLayout.Kind.LANDING_CENTER) == 1L, "landing center count changed");
         require(layout.blocks().size() == 173, "total arena block count changed");
+
+        // A rectangular arena is a layout change only: 2*radius+1 per axis, one
+        // marker above each of the four corners, pad still in the middle. The
+        // footprint's trip through the save file is not checked here: the JUnit test
+        // sourceset (which shares this file) cannot see the NBT classes, and this
+        // suite has to stay runnable in both places. The radii are stored next to
+        // the arena centre, which /minidrone arena status reads back.
+        TrainingArenaLayout runway = TrainingArenaLayout.centered(-1, -60, 17, 10, 4);
+        require(runway.widthM() == 21 && runway.depthM() == 9, "rectangular footprint is wrong");
+        require(runway.blocks().size() == 21 * 9 + 4, "rectangular block count changed");
+        require(
+            runway.blocks().stream().anyMatch(block ->
+                block.dx() == 0 && block.dz() == 0
+                    && block.kind() == TrainingArenaLayout.Kind.LANDING_CENTER),
+            "rectangular arena lost its centred landing pad"
+        );
     }
 
 

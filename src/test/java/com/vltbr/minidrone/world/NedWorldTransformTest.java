@@ -3,6 +3,7 @@ package com.vltbr.minidrone.world;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NedWorldTransformTest {
     private static final double EPSILON = 0.0001;
@@ -51,11 +52,46 @@ class NedWorldTransformTest {
         assertEquals(17.5, parked.z(), EPSILON);
     }
 
-    /** The arena is square, and its footprint is what the beacon advertises. */
+    /** The arena footprint is what the beacon advertises; the default is 13 m square. */
     @Test
     void reportsTheArenaFootprintInMetres() {
-        assertEquals(13, TrainingArenaLayout.sizeM());
-        assertEquals(2 * TrainingArenaLayout.RADIUS + 1, TrainingArenaLayout.sizeM());
+        TrainingArenaLayout square = TrainingArenaLayout.centered(0, 0, 0);
+        assertEquals(13, square.widthM());
+        assertEquals(13, square.depthM());
+        assertEquals(2 * TrainingArenaLayout.RADIUS + 1, square.widthM());
+
+        // The two axes are independent, so a longer runway along one of them is a
+        // layout change and not a protocol change: field_size_m is [width, depth].
+        TrainingArenaLayout runway = TrainingArenaLayout.centered(-1, -60, 17, 10, 4);
+        assertEquals(21, runway.widthM());
+        assertEquals(9, runway.depthM());
+        assertEquals(10, runway.radiusX());
+        assertEquals(4, runway.radiusZ());
+        // Surface blocks plus one marker above each of the four corners.
+        assertEquals(21 * 9 + 4, runway.blocks().size());
+        assertEquals(4, runway.blocks().stream()
+            .filter(block -> block.kind() == TrainingArenaLayout.Kind.CORNER_MARKER)
+            .count());
+        for (TrainingArenaLayout.RelativeBlock block : runway.blocks()) {
+            assertTrue(Math.abs(block.dx()) <= 10 && Math.abs(block.dz()) <= 4);
+        }
+    }
+
+    /** A rectangular arena still centres its pad, which is where the origin goes. */
+    @Test
+    void keepsTheLandingPadAtTheCentreOfARectangularArena() {
+        TrainingArenaLayout runway = TrainingArenaLayout.centered(0, 64, 0, 10, 4);
+
+        TrainingArenaLayout.RelativeBlock centre = runway.blocks().stream()
+            .filter(block -> block.dx() == 0 && block.dz() == 0)
+            .findFirst()
+            .orElseThrow();
+
+        assertEquals(TrainingArenaLayout.Kind.LANDING_CENTER, centre.kind());
+        NedWorldTransform origin = ArenaOrigin.centeredTransform(0, 64, 0);
+        assertEquals(0.5, origin.originX(), EPSILON);
+        assertEquals(65.0, origin.originY(), EPSILON);
+        assertEquals(0.5, origin.originZ(), EPSILON);
     }
 }
 

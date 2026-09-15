@@ -143,9 +143,10 @@ class MavlinkTransportMocapHealthTest {
      */
     @Test
     void advertisesTheTrainingFieldWhenTheArenaExists() {
+        TrainingArenaLayout arena = TrainingArenaLayout.centered(0, 0, 0);
         MocapFieldMetadata field = new MocapFieldMetadata(
-            TrainingArenaLayout.sizeM(),
-            TrainingArenaLayout.sizeM(),
+            arena.widthM(),
+            arena.depthM(),
             true,
             MocapFieldMetadata.CURRENT_PROTOCOL_VERSION,
             1787600000000000L
