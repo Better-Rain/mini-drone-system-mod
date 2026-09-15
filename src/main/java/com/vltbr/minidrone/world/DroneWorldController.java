@@ -3,6 +3,7 @@ package com.vltbr.minidrone.world;
 import com.vltbr.minidrone.MiniDroneMod;
 import com.vltbr.minidrone.entity.DroneEntity;
 import com.vltbr.minidrone.entity.ModEntityTypes;
+import com.vltbr.minidrone.sim.ImpactModel;
 import com.vltbr.minidrone.sim.PhysicsStep;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
 import net.minecraft.server.MinecraftServer;
@@ -96,17 +97,47 @@ public final class DroneWorldController implements AutoCloseable {
 
         double[] ned = DronePlacement.nedOffsetFor(
             transform, resolved.x(), resolved.y() - HALF_HEIGHT_M, resolved.z());
+        boolean supported = !isBoxFree(
+            PhysicsStep.boxAt(resolved.x(), resolved.y() - SUPPORT_PROBE_M, resolved.z(),
+                HALF_WIDTH_M, HALF_HEIGHT_M));
+
+        // What the impact did, not just that there was one: hitting a wall at speed
+        // destroys the flight, while touching down at the controlled descent rate does
+        // not. A blocked vertical axis only counts as an impact when it stopped a
+        // descent - hitting a ceiling on the way up is not a crash.
+        double horizontalSpeed = Math.hypot(
+            snapshot.velocityNorthMps(), snapshot.velocityEastMps());
+        double descentSpeed = Math.max(0.0, snapshot.velocityDownMps());
+        ImpactModel.Outcome impact = ImpactModel.Outcome.NONE;
+        if (resolved.blockedHorizontally()) {
+            impact = ImpactModel.assess(horizontalSpeed, 0.0);
+        }
+        if (resolved.blockedVertically() && descentSpeed > 0.0) {
+            ImpactModel.Outcome vertical = ImpactModel.assess(0.0, descentSpeed);
+            if (vertical == ImpactModel.Outcome.CRASH || impact == ImpactModel.Outcome.NONE) {
+                impact = vertical == ImpactModel.Outcome.CRASH ? vertical : impact;
+                if (vertical == ImpactModel.Outcome.CONTACT && impact == ImpactModel.Outcome.NONE) {
+                    impact = vertical;
+                }
+            }
+        }
+
         return new StepResult(
             ned[0], ned[1], ned[2],
-            resolved.blockedHorizontally(), resolved.blockedVertically());
+            resolved.blockedHorizontally(), resolved.blockedVertically(),
+            supported, impact);
     }
 
-    /** Where the world let the vehicle go, in local NED, and what stopped it. */
+    /** Where the world let the vehicle go, what stopped it, and what that meant. */
     public record StepResult(
         double northM, double eastM, double downM,
-        boolean blockedHorizontally, boolean blockedVertically
+        boolean blockedHorizontally, boolean blockedVertically,
+        boolean supported, ImpactModel.Outcome impact
     ) {
     }
+
+    /** How far below the feet the support probe looks for something solid. */
+    private static final double SUPPORT_PROBE_M = 0.05;
 
     /**
      * Whether the vehicle fits at that box.

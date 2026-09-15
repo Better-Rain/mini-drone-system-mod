@@ -58,6 +58,23 @@ public final class VirtualDroneState {
     private double batteryPercent = 100.0;
     /** Descent speed built up while falling after an in-flight disarm. */
     private double fallSpeedMps;
+    /**
+     * True while something solid is holding the vehicle up.
+     *
+     * <p>The world refines it every tick; until a world says otherwise the vehicle is
+     * assumed supported, which is what it is at spawn and what keeps the simulation
+     * usable on its own (the unit tests and the in-game self test run it with no world
+     * at all).
+     */
+    private boolean supportedByWorld = true;
+    /**
+     * Set when the vehicle has been destroyed by an impact.
+     *
+     * <p>It latches: the health beacon reports it as safety_latched, so the monitoring
+     * side refuses commands until the operator resets the vehicle, which is also what
+     * clears it.
+     */
+    private boolean safetyLatched;
 
     public VirtualDroneState(int systemId, int componentId, String droneId) {
         this.systemId = systemId;
@@ -70,6 +87,16 @@ public final class VirtualDroneState {
         velocityEastMps = 0.0;
         velocityDownMps = 0.0;
         yawRateRadS = 0.0;
+
+        // Unpowered and unsupported means it falls, evaluated every tick rather than
+        // only when the disarm arrives: a vehicle that becomes unsupported later - the
+        // block under it was removed, the origin moved - has to fall too.
+        if (!armed && !supportedByWorld
+            && flightPhase != FlightPhase.LANDING
+            && flightPhase != FlightPhase.FALLING) {
+            flightPhase = FlightPhase.FALLING;
+            fallSpeedMps = 0.0;
+        }
 
         if (flightPhase == FlightPhase.TAKING_OFF) {
             velocityDownMps = -CLIMB_RATE_MPS;
@@ -268,11 +295,13 @@ public final class VirtualDroneState {
         double east,
         double down,
         boolean blockedHorizontally,
-        boolean blockedVertically
+        boolean blockedVertically,
+        boolean supported
     ) {
         northM = north;
         eastM = east;
         downM = down;
+        supportedByWorld = supported;
         if (blockedHorizontally) {
             velocityNorthMps = 0.0;
             velocityEastMps = 0.0;
@@ -281,14 +310,54 @@ public final class VirtualDroneState {
             velocityDownMps = 0.0;
             fallSpeedMps = 0.0;
         }
-        if (down >= -GROUND_EPSILON_M && blockedVertically) {
-            downM = 0.0;
+        // Coming to rest is "the world is holding it up", not "the altitude reads
+        // zero": a vehicle parked on a block that sits above the origin plane is just
+        // as landed, and reporting it as airborne would have the monitoring side
+        // waiting for a landing that already happened.
+        if (supported && blockedVertically) {
+            if (down >= -GROUND_EPSILON_M) {
+                downM = 0.0;
+            }
             if (flightPhase == FlightPhase.FALLING) {
                 flightPhase = FlightPhase.LANDED;
             } else if (flightPhase == FlightPhase.LANDING) {
                 armed = false;
                 flightPhase = FlightPhase.LANDED;
             }
+        }
+    }
+
+    /** True while something solid is holding the vehicle up. */
+    public boolean supportedByWorld() {
+        return supportedByWorld;
+    }
+
+    /** True when an impact has destroyed the vehicle and it has not been reset. */
+    public boolean safetyLatched() {
+        return safetyLatched;
+    }
+
+    /** Clears the crash latch; the operator's reset does this. */
+    public void clearSafetyLatch() {
+        safetyLatched = false;
+    }
+
+    /**
+     * An impact hard enough to destroy the flight: the rotors are done, so the vehicle
+     * is disarmed (which means it falls) and the event is latched for the monitoring
+     * side. Nothing about the position is changed here - falling from where it hit is
+     * what a crash looks like.
+     */
+    public void crash() {
+        safetyLatched = true;
+        armed = false;
+        clearSetpoint();
+        if (downM < -GROUND_EPSILON_M) {
+            flightPhase = FlightPhase.FALLING;
+            fallSpeedMps = 0.0;
+        } else {
+            downM = 0.0;
+            flightPhase = FlightPhase.LANDED;
         }
     }
 

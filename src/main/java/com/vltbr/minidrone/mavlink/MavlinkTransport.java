@@ -397,7 +397,8 @@ public final class MavlinkTransport {
             System.currentTimeMillis() * 1000L,
             mocapExpectedDroneId,
             forwardingHold,
-            fieldMetadata.get()
+            fieldMetadata.get(),
+            droneManager.primaryDrone().safetyLatched()
         );
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(
@@ -423,7 +424,7 @@ public final class MavlinkTransport {
         String expectedDroneId,
         ForwardingHold forwardingHold
     ) {
-        return mocapHealthPayload(state, wallTimeUnixUs, expectedDroneId, forwardingHold, null);
+        return mocapHealthPayload(state, wallTimeUnixUs, expectedDroneId, forwardingHold, null, false);
     }
 
     /**
@@ -437,6 +438,25 @@ public final class MavlinkTransport {
         String expectedDroneId,
         ForwardingHold forwardingHold,
         MocapFieldMetadata field
+    ) {
+        return mocapHealthPayload(state, wallTimeUnixUs, expectedDroneId, forwardingHold, field, false);
+    }
+
+    /**
+     * Builds the beacon.
+     *
+     * <p>{@code safetyLatched} is what a crash leaves behind: the monitoring side stops
+     * accepting commands for a latched source, which is the point - a vehicle that has
+     * been destroyed by an impact must be reset before it can fly again, and the reset
+     * is what clears the latch.
+     */
+    static String mocapHealthPayload(
+        VirtualDroneSnapshot state,
+        long wallTimeUnixUs,
+        String expectedDroneId,
+        ForwardingHold forwardingHold,
+        MocapFieldMetadata field,
+        boolean safetyLatched
     ) {
         String fieldBlock = field == null
             ? ""
@@ -460,7 +480,7 @@ public final class MavlinkTransport {
             "{\"schema\":\"mocap_relay_health_v1\","
                 + "\"source_mode\":\"minecraft_virtual\","
                 + "\"wall_time_unix_us\":%d,"
-                + "\"healthy\":true,\"safety_latched\":false,"
+                + "\"healthy\":true,\"safety_latched\":%s,"
                 + "\"position_only\":false,\"attitude_source\":\"hybrid\","
                 + "\"fusion_mode\":\"flight_controller_roll_pitch_external_nav_position_yaw\","
                 + "\"roll_pitch_source\":\"flight_controller\","
@@ -475,6 +495,7 @@ public final class MavlinkTransport {
                 + "\"last_forwarded_pose\":{\"position_m\":[%.6f,%.6f,%.6f],"
                 + "\"roll_pitch_yaw_rad\":[%.6f,%.6f,%.6f]}}",
             wallTimeUnixUs,
+            safetyLatched,
             jsonString(expectedDroneId),
             Double.toString(1000.0 / MOCAP_HEALTH_PERIOD_MS),
             fieldBlock,

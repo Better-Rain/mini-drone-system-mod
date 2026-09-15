@@ -1,5 +1,6 @@
 package com.vltbr.minidrone.sim;
 
+import com.vltbr.minidrone.MiniDroneMod;
 import com.vltbr.minidrone.world.DronePlacement;
 import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.NedWorldTransform;
@@ -41,8 +42,20 @@ public final class VirtualDroneManager implements VirtualFlightController {
                 step.eastM(),
                 step.downM(),
                 step.blockedHorizontally(),
-                step.blockedVertically()
+                step.blockedVertically(),
+                step.supported()
             );
+            if (step.impact() == ImpactModel.Outcome.CRASH) {
+                // Stopping dead is not what a multirotor does when it meets a wall: the
+                // flight is over, so it falls from where it hit and the event is latched
+                // until the operator resets it.
+                MiniDroneMod.LOGGER.warn(
+                    "Virtual drone crashed into the world at NED ({}, {}, {})",
+                    String.format(java.util.Locale.ROOT, "%.2f", step.northM()),
+                    String.format(java.util.Locale.ROOT, "%.2f", step.eastM()),
+                    String.format(java.util.Locale.ROOT, "%.2f", step.downM()));
+                primaryDrone.crash();
+            }
         }
         publish();
     }
@@ -102,6 +115,10 @@ public final class VirtualDroneManager implements VirtualFlightController {
         if (!primaryDrone.resetLocalPosition()) {
             return OriginResetResult.DRONE_ACTIVE;
         }
+        // Resetting the vehicle is also how a crash is cleared: the latch exists so the
+        // monitoring side stops accepting commands after an impact, and the operator's
+        // explicit reset is the act that says "this vehicle is serviceable again".
+        primaryDrone.clearSafetyLatch();
         publish();
         worldController.resetOrigin(player, snapshot());
         return OriginResetResult.RESET;

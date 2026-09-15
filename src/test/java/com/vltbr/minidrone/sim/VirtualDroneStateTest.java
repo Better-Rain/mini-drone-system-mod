@@ -124,6 +124,57 @@ class VirtualDroneStateTest {
      * The world has the last word: whatever position it resolved is the one the
      * telemetry reports, and a blocked axis must not keep claiming speed.
      */
+    /**
+     * The bug the operator found: a disarmed vehicle that nothing is holding up must
+     * fall, however it got there. The support flag comes from the world, so a vehicle
+     * that loses its ground - or whose origin moved out from under it - falls too,
+     * instead of hanging in the air because no disarm event ever arrived.
+     */
+    @Test
+    void aDisarmedVehicleThatNothingSupportsFalls() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+        assertFalse(drone.snapshot().airborne());
+
+        // The world reports the vehicle five metres up with nothing under it.
+        drone.adoptExternalPosition(0.0, 0.0, -5.0, false, false, false);
+        drone.tick();
+
+        assertTrue(drone.snapshot().airborne(), "it should be falling, not hanging there");
+        for (int tick = 0; tick < 200 && drone.snapshot().airborne(); tick++) {
+            // The world holds it up once it is back on the ground.
+            drone.adoptExternalPosition(
+                drone.snapshot().northM(), drone.snapshot().eastM(),
+                Math.max(drone.snapshot().downM(), -0.0), false, true, true);
+            drone.tick();
+        }
+        assertFalse(drone.snapshot().airborne());
+        assertEquals(1, MavlinkMessages.extendedSysState(drone.snapshot())[1]);
+    }
+
+    /** An impact destroys the flight: disarm, fall, and latch until reset. */
+    @Test
+    void anImpactLatchesTheVehicleUntilItIsReset() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+        drone.setArmed(true);
+        drone.takeoff(2.0);
+        for (int tick = 0; tick < 60; tick++) {
+            drone.tick();
+        }
+        assertTrue(drone.snapshot().armed());
+        assertFalse(drone.safetyLatched());
+
+        drone.crash();
+
+        assertFalse(drone.snapshot().armed(), "a crashed vehicle is not armed");
+        assertTrue(drone.safetyLatched(), "the crash has to be reported to the monitoring side");
+        assertTrue(drone.snapshot().airborne(), "a crashed vehicle falls");
+
+        drone.clearSafetyLatch();
+        assertFalse(drone.safetyLatched());
+    }
+
     @Test
     void adoptsThePositionTheWorldAllowed() {
         VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
@@ -136,7 +187,7 @@ class VirtualDroneStateTest {
         assertTrue(drone.snapshot().airborne());
 
         // A wall stopped it 30 cm into the metre it asked for, one metre up.
-        drone.adoptExternalPosition(0.3, 0.0, -1.0, true, false);
+        drone.adoptExternalPosition(0.3, 0.0, -1.0, true, false, false);
 
         VirtualDroneSnapshot pressed = drone.snapshot();
         assertEquals(0.3, pressed.northM(), 0.0001);
@@ -155,7 +206,7 @@ class VirtualDroneStateTest {
         assertTrue(drone.snapshot().airborne());
 
         // The world reports the vehicle resting on the floor.
-        drone.adoptExternalPosition(0.0, 0.0, -0.0, false, true);
+        drone.adoptExternalPosition(0.0, 0.0, -0.0, false, true, true);
 
         VirtualDroneSnapshot landed = drone.snapshot();
         assertFalse(landed.airborne());
