@@ -111,18 +111,23 @@ public record VehicleModel(
     }
 
     /**
-     * The speed at which drag balances full thrust at the maximum lean.
+     * The speed at which drag balances the thrust a full lean can point sideways.
      *
-     * <p>If the flight controller is allowed to ask for more than this, the vehicle
-     * simply cannot reach it - which is the point of having drag at all: the top speed
-     * is a property of the airframe rather than a number somebody typed in.
+     * <p>The vehicle moves sideways with the horizontal part of its thrust vector, and
+     * the lean limit caps what that can produce at {@code g * tan(maxTiltRad())} - so the
+     * speed where quadratic drag balances it is
+     * {@code sqrt(massKg * GRAVITY_MPS2 * tan(maxTiltRad()) / dragCoefficient)}, which is
+     * 1.86 m/s for the defaults. If the flight controller is allowed to ask for more than
+     * this, the vehicle simply cannot reach it - which is the point of having drag at
+     * all: the top speed is a property of the airframe rather than a number somebody
+     * typed in.
      */
     public double topSpeedMps() {
         if (dragCoefficient <= 0.0) {
             return Double.POSITIVE_INFINITY;
         }
-        double horizontalForce = maxThrustN() * Math.sin(maxTiltRad());
-        return Math.sqrt(horizontalForce / dragCoefficient);
+        double horizontalAcceleration = GRAVITY_MPS2 * Math.tan(maxTiltRad());
+        return Math.sqrt(massKg * horizontalAcceleration / dragCoefficient);
     }
 
     /** Seconds to accelerate from rest to 63% of a speed the drag allows. */

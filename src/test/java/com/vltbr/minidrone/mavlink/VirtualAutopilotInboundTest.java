@@ -149,8 +149,10 @@ class VirtualAutopilotInboundTest {
         rig.tick(1);
 
         // One tick of the airframe response: the setpoint arrived, the vehicle started
-        // towards it, and the speed is inside the envelope - but the airframe has not
-        // built the flight controller's 1.4 m/s in a single 50 ms tick.
+        // towards it, and the speed is inside the envelope - but the airframe has to tip
+        // its thrust into the movement first, so it has not built the flight controller's
+        // 1.4 m/s in a single 50 ms tick. The lean it starts with points the way the
+        // target is: nose-down for north, rolled right for east, no yaw commanded.
         VirtualDroneSnapshot moving = rig.snapshot();
         double speed = Math.hypot(moving.velocityNorthMps(), moving.velocityEastMps());
         assertTrue(speed > 0.0, "the setpoint did not start the vehicle moving");
@@ -159,8 +161,14 @@ class VirtualAutopilotInboundTest {
             "the airframe reached the commanded speed in one tick");
         assertTrue(moving.northM() > 0.0);
         assertTrue(moving.eastM() > 0.0);
+        assertTrue(moving.pitchRad() < 0.0, "the airframe started without leaning into the command");
+        assertTrue(moving.rollRad() > 0.0, "the airframe started without leaning into the command");
 
-        // The response catches up with the command, so the vehicle gets to the point.
+        // The response catches up with the command, so the vehicle is taken to the point
+        // and held there: the tracker flies the leg at a speed the airframe can stop from
+        // and the plant's arrival deadband catches the last few centimetres (measured on
+        // this leg: the vehicle snaps onto (2, 1) on tick 44 and is still exactly there at
+        // the end of the budget, having covered its 0.0403 m of approach at 0.2511 m/s).
         rig.tick(60);
         VirtualDroneSnapshot arrived = rig.snapshot();
         assertEquals(2.0, arrived.northM(), 0.01);
@@ -191,15 +199,21 @@ class VirtualAutopilotInboundTest {
         Rig rig = new Rig();
         rig.deliver(VELOCITY_ONLY, 0, 0, 0, 0.5, 0.0, 0.0, 0.0);
 
-        // The command is not a teleport: the airframe builds the speed over its
-        // response time, so one tick in the vehicle is moving well short of 0.5 m/s.
+        // The command is not a teleport: the airframe builds the lean that produces the
+        // speed first, so one tick in the vehicle is leaning north (nose-down) and moving
+        // well short of 0.5 m/s.
         rig.tick(1);
-        double firstSpeed = rig.snapshot().velocityNorthMps();
+        VirtualDroneSnapshot leaning = rig.snapshot();
+        double firstSpeed = leaning.velocityNorthMps();
         assertTrue(firstSpeed > 0.0, "the velocity channel did not start the vehicle moving");
         assertTrue(firstSpeed < 0.5, "the airframe reached the commanded speed in one tick");
+        assertTrue(leaning.pitchRad() < 0.0, "the velocity channel drove the vehicle without leaning");
+        assertEquals(0.0, leaning.velocityEastMps(), 1e-9);
 
-        // Two seconds is past the response time, so the command is reached, and the
-        // vehicle has covered the ground that speed buys it - minus the ramp.
+        // Two seconds is past the response time, so the command is reached and held: the
+        // velocity loop's trim cancels the drag the lean is fighting, so a 0.5 m/s command
+        // settles on 0.5 m/s (measured 0.49931 m/s at two seconds, still rising towards it
+        // from below) instead of on the 0.427 m/s the error alone would balance drag at.
         rig.tick(39);
         VirtualDroneSnapshot flying = rig.snapshot();
         assertEquals(0.5, flying.velocityNorthMps(), 0.005);

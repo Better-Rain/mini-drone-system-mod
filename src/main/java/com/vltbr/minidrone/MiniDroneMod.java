@@ -6,6 +6,7 @@ import com.vltbr.minidrone.mavlink.MocapFieldMetadata;
 import com.vltbr.minidrone.block.ModBlocks;
 import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.item.ModItems;
+import com.vltbr.minidrone.sim.VehicleModel;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
 import com.vltbr.minidrone.world.ArenaOrigin;
@@ -97,6 +98,20 @@ public final class MiniDroneMod implements ModInitializer {
                                     context.getSource(),
                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(
                                         context, "radius")))))
+                        .then(literal("physics")
+                            .executes(context -> reportPhysics(context.getSource()))
+                            .then(literal("reset").executes(context -> resetPhysics(context.getSource())))
+                            .then(literal("set")
+                                .then(net.minecraft.commands.Commands.argument(
+                                    "name", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                    .then(net.minecraft.commands.Commands.argument(
+                                        "value", com.mojang.brigadier.arguments.DoubleArgumentType.doubleArg())
+                                        .executes(context -> setPhysics(
+                                            context.getSource(),
+                                            com.mojang.brigadier.arguments.StringArgumentType.getString(
+                                                context, "name"),
+                                            com.mojang.brigadier.arguments.DoubleArgumentType.getDouble(
+                                                context, "value")))))))
                         .then(literal("set")
                             .then(literal("selected")
                                 .executes(context -> setFieldFromSelector(context.getSource())))
@@ -314,6 +329,63 @@ public final class MiniDroneMod implements ModInitializer {
                 return 0;
             }
         }
+    }
+
+    /**
+     * What the vehicle is made of: mass, thrust, drag, lag, limits, contact behaviour.
+     *
+     * <p>Everything that decides how the vehicle feels is here rather than in the code,
+     * so an operator can fly a heavy quad or a nimble one, make the gates narrow, or
+     * soften the crash threshold, without editing Java.
+     */
+    private int reportPhysics(CommandSourceStack source) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        VehicleModel model = droneManager.primaryDrone().vehicleModel();
+        source.sendSuccess(() -> copyableMessage(
+            "Virtual airframe:" + model.describe()
+                + "\n  /minidrone physics set <name> <value>, /minidrone physics reset"), false);
+        return 1;
+    }
+
+    private int setPhysics(CommandSourceStack source, String name, double value) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        VehicleModel current = droneManager.primaryDrone().vehicleModel();
+        try {
+            VehicleModel updated = current.with(name, value);
+            droneManager.primaryDrone().setVehicleModel(updated);
+            LOGGER.info("Virtual airframe {} set to {}", name, value);
+            source.sendSuccess(() -> copyableMessage(String.format(
+                "%s = %s. Derived now: max thrust %.3f N, hover throttle %.0f%%, top speed %.2f m/s",
+                name,
+                String.valueOf(value),
+                updated.maxThrustN(),
+                updated.hoverThrottle() * 100.0,
+                updated.topSpeedMps())), false);
+            return 1;
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal(
+                exception.getMessage() + ". Known parameters: "
+                    + String.join(", ", VehicleModel.parameterNames())));
+            return 0;
+        }
+    }
+
+    private int resetPhysics(CommandSourceStack source) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        VehicleModel restored = VehicleModel.fromProperties(System.getProperties());
+        droneManager.primaryDrone().setVehicleModel(restored);
+        source.sendSuccess(() -> copyableMessage(
+            "Virtual airframe reset to its defaults" + restored.describe()), false);
+        return 1;
     }
 
     private int reportFieldStatus(CommandSourceStack source) {

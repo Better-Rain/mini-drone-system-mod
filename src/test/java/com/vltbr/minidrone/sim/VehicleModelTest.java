@@ -34,8 +34,9 @@ class VehicleModelTest {
     }
 
     /**
-     * The speed the airframe can actually reach is a property of the airframe: drag
-     * balances the thrust that can be pointed sideways. It has to sit above what the
+     * The speed the airframe can actually reach is a property of the airframe: the lean
+     * limit decides how much thrust can be pointed sideways, drag grows with the square
+     * of the speed, and the two balance at the top speed. It has to sit above what the
      * controller may ask for, or the controller limit would be meaningless.
      */
     @Test
@@ -44,12 +45,15 @@ class VehicleModelTest {
         assertTrue(top > VehicleModel.DEFAULTS.maxHorizontalSpeedMps(),
             "top speed " + top + " should exceed the requested limit");
         assertEquals(
-            Math.sqrt(VehicleModel.DEFAULTS.maxThrustN()
-                * Math.sin(VehicleModel.DEFAULTS.maxTiltRad())
+            Math.sqrt(VehicleModel.DEFAULTS.massKg() * VehicleModel.GRAVITY_MPS2
+                * Math.tan(VehicleModel.DEFAULTS.maxTiltRad())
                 / VehicleModel.DEFAULTS.dragCoefficient()),
             top,
             EPSILON
         );
+        // The defaults are a 30 g quad with a 35 degree lean limit: 1.86 m/s, which leaves
+        // room above the 1.4 m/s the flight controller is allowed to ask for.
+        assertEquals(1.86, top, 0.01);
 
         // More drag, lower top speed; no drag, no ceiling.
         VehicleModel draggy = VehicleModel.DEFAULTS.with("drag_coefficient", 0.24);

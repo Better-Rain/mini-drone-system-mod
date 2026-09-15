@@ -22,6 +22,15 @@ public final class VirtualDroneState {
     private static final double MAX_YAW_RATE_RAD_S = 1.5;
     private static final double GROUND_EPSILON_M = 0.01;
     private static final double POSITION_EPSILON_M = 0.01;
+    /**
+     * How close a commanded point is considered reached. Inside it the vehicle holds
+     * position instead of chasing the last centimetres, which is what a real position
+     * loop does with its deadband - and what stops a lagged vehicle hunting around a
+     * point it can never sit exactly on.
+     */
+    private static final double ARRIVAL_DEADBAND_M = 0.05;
+    /** And how slow it has to be for that to count. */
+    private static final double ARRIVAL_SPEED_MPS = 0.20;
     private static final double YAW_EPSILON_RAD = 0.001;
     private static final double MAX_HORIZONTAL_DISTANCE_M = 120.0;
     /**
@@ -30,7 +39,7 @@ public final class VirtualDroneState {
      * constants.
      */
     private VehicleModel vehicleModel = VehicleModel.DEFAULTS;
-    private static final double ATTITUDE_RESPONSE = 0.3;
+
     private static final int AXIS_COUNT = 3;
 
     private final int systemId;
@@ -41,6 +50,14 @@ public final class VirtualDroneState {
     private final Channel velocity = new Channel();
     private final Channel acceleration = new Channel();
     private final double[] actuatedVelocityMps = new double[AXIS_COUNT];
+    /**
+     * The acceleration the last tick actually applied to the horizontal axes, m/s^2.
+     *
+     * <p>Kept because the lean lags: the speed the vehicle is about to carry is its
+     * speed plus one attitude response time of this, which is what
+     * {@link #applyThrustVectorMotion} has to measure the velocity error against.
+     */
+    private final double[] achievedAccelerationMps2 = new double[AXIS_COUNT];
     private boolean yawSet;
     private double yawSetpointRad;
     private boolean yawRateSet;
@@ -398,6 +415,7 @@ public final class VirtualDroneState {
         velocity.clear();
         acceleration.clear();
         java.util.Arrays.fill(actuatedVelocityMps, 0.0);
+        java.util.Arrays.fill(achievedAccelerationMps2, 0.0);
         yawSet = false;
         yawRateSet = false;
         setpointActive = false;
@@ -448,14 +466,20 @@ public final class VirtualDroneState {
             double deltaEast = position.value(AXIS_EAST) - eastM;
             double distance = Math.hypot(deltaNorth, deltaEast);
             if (distance > POSITION_EPSILON_M) {
-                double step = Math.min(vehicleModel.maxHorizontalSpeedMps() * TICK_SECONDS, distance);
-                trackingNorth = deltaNorth / distance * step / TICK_SECONDS;
-                trackingEast = deltaEast / distance * step / TICK_SECONDS;
+                double speed = approachSpeedMps(
+                    distance,
+                    Math.hypot(actuatedVelocityMps[AXIS_NORTH], actuatedVelocityMps[AXIS_EAST]));
+                trackingNorth = deltaNorth / distance * speed;
+                trackingEast = deltaEast / distance * speed;
             }
         } else if (trackedNorth) {
-            trackingNorth = trackScalar(northM, position.value(AXIS_NORTH), vehicleModel.maxHorizontalSpeedMps());
+            double delta = position.value(AXIS_NORTH) - northM;
+            trackingNorth = Math.copySign(
+                approachSpeedMps(Math.abs(delta), Math.abs(actuatedVelocityMps[AXIS_NORTH])), delta);
         } else if (trackedEast) {
-            trackingEast = trackScalar(eastM, position.value(AXIS_EAST), vehicleModel.maxHorizontalSpeedMps());
+            double delta = position.value(AXIS_EAST) - eastM;
+            trackingEast = Math.copySign(
+                approachSpeedMps(Math.abs(delta), Math.abs(actuatedVelocityMps[AXIS_EAST])), delta);
         }
 
         double trackingDown = 0.0;
@@ -473,7 +497,7 @@ public final class VirtualDroneState {
             demand(AXIS_DOWN, trackingDown)
         };
         boundToPlantEnvelope(demand);
-        applyAirframeResponse(demand);
+        applyThrustVectorMotion(demand);
 
         velocityNorthMps = actuatedVelocityMps[AXIS_NORTH];
         velocityEastMps = actuatedVelocityMps[AXIS_EAST];
@@ -501,30 +525,133 @@ public final class VirtualDroneState {
      * instant: a step command builds up over a few tenths of a second the way a real
      * quadcopter does, instead of jumping there in one tick.
      */
-    private void applyAirframeResponse(double[] demand) {
-        double mass = vehicleModel.massKg();
-        double thrustAccel = vehicleModel.maxThrustN() * Math.sin(vehicleModel.maxTiltRad()) / mass;
-        double climbAccel = Math.max(0.0, vehicleModel.maxThrustN() / mass - VehicleModel.GRAVITY_MPS2);
+    /**
+     * Horizontal motion from the thrust vector.
+     *
+     * <p>A quadcopter has no wings and no wheels: the only way it moves sideways is by
+     * leaning and pointing part of its thrust that way. So the velocity error commands a
+     * lean, the rate loop reaches that lean, and the acceleration is what the lean
+     * actually produces (`g * tan(tilt)`, clamped by the lean limit). Drag then resists
+     * the motion as its square.
+     *
+     * <p>This is what makes the vehicle feel like an aircraft rather than a cursor: it
+     * has to tip into a movement, it keeps drifting while it tips back, and a hard lean
+     * leaves less thrust to hold altitude with.
+     */
+    private void applyThrustVectorMotion(double[] demand) {
+        double gravity = VehicleModel.GRAVITY_MPS2;
         double responseS = Math.max(
             TICK_SECONDS,
             vehicleModel.motorTimeConstantS() + vehicleModel.attitudeTimeConstantS());
-        double dragTerminal = vehicleModel.topSpeedMps();
+        double accelLimit = gravity * Math.tan(vehicleModel.maxTiltRad());
 
-        for (int axis = 0; axis < AXIS_COUNT; axis++) {
-            double current = actuatedVelocityMps[axis];
-            double target = demand[axis];
-            double accelLimit;
-            if (axis == AXIS_DOWN) {
-                // Falling is gravity; climbing is what thrust is left over after
-                // holding the vehicle up.
-                accelLimit = target < current ? VehicleModel.GRAVITY_MPS2 : climbAccel;
-            } else {
-                target = Math.max(-dragTerminal, Math.min(dragTerminal, target));
-                accelLimit = thrustAccel;
-            }
-            double requested = (target - current) * TICK_SECONDS / responseS;
-            actuatedVelocityMps[axis] = current + clamp(requested, accelLimit * TICK_SECONDS);
+        // The velocity error asks for an acceleration; the lean limit says how much of
+        // it can be had. Drag is fed forward, because a lean chosen from the velocity
+        // error alone balances drag at some fraction of the command: the vehicle would
+        // settle 15 to 30 per cent short of every speed it was asked for.
+        //
+        // The error is measured against where the vehicle is heading rather than where
+        // it is. The lean takes attitudeTimeConstantS to build, so the speed keeps
+        // climbing for that long after the command is reached - and the error, measured
+        // against the speed of the moment, keeps asking for the acceleration that does
+        // the climbing. That is what made the response ring past its command (measured
+        // 0.50470 m/s for a 0.5 m/s command, peaking fifteen ticks in). Reading the
+        // error off the speed the acceleration of the moment is about to deliver -
+        // speed + attitudeTimeConstantS * acceleration - puts the lean back on the trim
+        // before the command is reached instead of after it: with the response time T
+        // and the attitude lag t the loop becomes t*v'' + (1 + t/T)*v' + v/T = 0, whose
+        // damping ratio (1 + t/T) / (2*sqrt(t/T)) is at least one for every airframe,
+        // so the command is approached from below and never passed.
+        double predictS = Math.max(TICK_SECONDS, vehicleModel.attitudeTimeConstantS());
+        double predictedNorth = actuatedVelocityMps[AXIS_NORTH]
+            + achievedAccelerationMps2[AXIS_NORTH] * predictS;
+        double predictedEast = actuatedVelocityMps[AXIS_EAST]
+            + achievedAccelerationMps2[AXIS_EAST] * predictS;
+        double accelNorth = clamp(
+            (demand[AXIS_NORTH] - predictedNorth) / responseS
+                + dragAccelerationMps2(actuatedVelocityMps[AXIS_NORTH]),
+            accelLimit);
+        double accelEast = clamp(
+            (demand[AXIS_EAST] - predictedEast) / responseS
+                + dragAccelerationMps2(actuatedVelocityMps[AXIS_EAST]),
+            accelLimit);
+
+        // Lean is a body-frame attitude: forward is nose-down, right is roll-right, and
+        // the commanded acceleration has to be rotated into that frame by the yaw.
+        double cosYaw = Math.cos(yawRad);
+        double sinYaw = Math.sin(yawRad);
+        double forwardAccel = accelNorth * cosYaw + accelEast * sinYaw;
+        double rightAccel = -accelNorth * sinYaw + accelEast * cosYaw;
+        steerTowardTilt(
+            Math.atan(rightAccel / gravity),
+            -Math.atan(forwardAccel / gravity)
+        );
+
+        // What the actual attitude produces, not what was asked for.
+        double actualForward = -Math.tan(pitchRad);
+        double actualRight = Math.tan(rollRad);
+        double actualNorth = gravity * (actualForward * cosYaw - actualRight * sinYaw);
+        double actualEast = gravity * (actualForward * sinYaw + actualRight * cosYaw);
+
+        double speedNorth = actuatedVelocityMps[AXIS_NORTH];
+        double speedEast = actuatedVelocityMps[AXIS_EAST];
+        actuatedVelocityMps[AXIS_NORTH] = stepWithDrag(actualNorth, speedNorth);
+        actuatedVelocityMps[AXIS_EAST] = stepWithDrag(actualEast, speedEast);
+        keepHorizontalSpeedInsideTheLimit();
+        // Remembered for the prediction above: what this tick really applied, after the
+        // attitude and the drag had their say.
+        achievedAccelerationMps2[AXIS_NORTH] = actualNorth - dragAccelerationMps2(speedNorth);
+        achievedAccelerationMps2[AXIS_EAST] = actualEast - dragAccelerationMps2(speedEast);
+
+        // A leaning vehicle has less thrust pointing up, which is why a hard run sags.
+        double thrustUp = Math.cos(rollRad) * Math.cos(pitchRad);
+        applyVerticalResponse(demand[AXIS_DOWN], thrustUp);
+    }
+
+    /**
+     * The contract's horizontal limit is a bound, and no setpoint may carry the vehicle
+     * past it.
+     *
+     * <p>The drag trim is what crosses it: the trim hands the step exactly the
+     * acceleration the drag is about to take away, and at the limit the two do not
+     * cancel to the digit. A demand of 5 m/s on both horizontal axes reached
+     * 1.4000505 m/s against the 1.4 m/s limit on tick 20 - 0.0036 per cent over, which
+     * is still a speed the flight controller was never allowed to ask for. Scaling the
+     * pair back onto the limit keeps the envelope a bound rather than a target.
+     */
+    private void keepHorizontalSpeedInsideTheLimit() {
+        double limit = vehicleModel.maxHorizontalSpeedMps();
+        double speed = Math.hypot(
+            actuatedVelocityMps[AXIS_NORTH], actuatedVelocityMps[AXIS_EAST]);
+        if (speed > limit) {
+            double scale = limit / speed;
+            actuatedVelocityMps[AXIS_NORTH] *= scale;
+            actuatedVelocityMps[AXIS_EAST] *= scale;
         }
+    }
+
+    /** The deceleration quadratic drag applies at a speed, m/s^2. */
+    private double dragAccelerationMps2(double speed) {
+        return vehicleModel.dragCoefficient() * speed * Math.abs(speed) / vehicleModel.massKg();
+    }
+
+    /** One tick of horizontal motion under an acceleration and quadratic drag. */
+    private double stepWithDrag(double accel, double current) {
+        return current + (accel - dragAccelerationMps2(current)) * TICK_SECONDS;
+    }
+
+    /** The vertical channel: thrust left over after the lean holds the vehicle up. */
+    private void applyVerticalResponse(double target, double thrustFactor) {
+        double mass = vehicleModel.massKg();
+        double climbAccel = Math.max(
+            0.0, vehicleModel.maxThrustN() * thrustFactor / mass - VehicleModel.GRAVITY_MPS2);
+        double responseS = Math.max(
+            TICK_SECONDS,
+            vehicleModel.motorTimeConstantS() + vehicleModel.attitudeTimeConstantS());
+        double current = actuatedVelocityMps[AXIS_DOWN];
+        double accelLimit = target < current ? VehicleModel.GRAVITY_MPS2 : climbAccel;
+        double requested = (target - current) * TICK_SECONDS / responseS;
+        actuatedVelocityMps[AXIS_DOWN] = current + clamp(requested, accelLimit * TICK_SECONDS);
     }
 
     /** The airframe this plant is flying. */
@@ -566,7 +693,9 @@ public final class VirtualDroneState {
 
     /** How fast the motors can change horizontal speed, m/s^2. */
     private double horizontalAccelLimitMps2() {
-        return vehicleModel.maxThrustN() * Math.sin(vehicleModel.maxTiltRad()) / vehicleModel.massKg();
+        // A quadcopter accelerates sideways by leaning, so the limit is what the lean
+        // can produce, not what the motors could do if they pointed sideways.
+        return VehicleModel.GRAVITY_MPS2 * Math.tan(vehicleModel.maxTiltRad());
     }
 
     /** Climbing is what thrust is left over after holding the vehicle up. */
@@ -578,6 +707,36 @@ public final class VirtualDroneState {
     private static double trackScalar(double current, double target, double rateMps) {
         double delta = target - current;
         return Math.abs(delta) > POSITION_EPSILON_M ? Math.copySign(rateMps, delta) : 0.0;
+    }
+
+    /**
+     * The speed to close a distance with.
+     *
+     * <p>A vehicle with lag cannot stop on the spot: while the attitude tips back and the
+     * motors spin down it still travels about {@code speed * (motor + attitude constant)}.
+     * Commanding more than the remaining distance can absorb makes the vehicle overshoot
+     * and then orbit the point it was told to hold - which is exactly what the old
+     * "move at the limit until you are within a centimetre" tracker did once the plant
+     * became physical. So the commanded speed leaves braking room, and stops demanding
+     * anything at all once the rest of the way is momentum.
+     *
+     * <p>This is the position tracker's own demand, and it is only asked for on axes the
+     * sender commanded a position on: it is one half of the demand, the feed-forward is
+     * the other, so a quiet tracker here never silences a commanded speed. What does
+     * silence one is the arrival snap, which is why that one is gated on
+     * {@link #positionIsTheWholeInstruction(int)}.
+     */
+    private double approachSpeedMps(double distance, double currentSpeed) {
+        double lagS = Math.max(
+            TICK_SECONDS,
+            vehicleModel.motorTimeConstantS() + vehicleModel.attitudeTimeConstantS());
+        double brakingDistance = currentSpeed * lagS;
+        if (distance <= brakingDistance + ARRIVAL_DEADBAND_M) {
+            return 0.0;
+        }
+        return Math.min(
+            vehicleModel.maxHorizontalSpeedMps(),
+            (distance - brakingDistance) / lagS);
     }
 
     private void boundToPlantEnvelope(double[] demand) {
@@ -594,7 +753,7 @@ public final class VirtualDroneState {
 
     private void snapOnArrival() {
         for (int axis = 0; axis < AXIS_COUNT; axis++) {
-            if (!position.active(axis)) {
+            if (!position.active(axis) || !positionIsTheWholeInstruction(axis)) {
                 continue;
             }
             double target = position.value(axis);
@@ -603,6 +762,49 @@ public final class VirtualDroneState {
                 setPosition(axis, target);
             }
         }
+
+        // The last few centimetres are held rather than chased. A real position loop has
+        // a deadband for the same reason: with the attitude and motor lag in the path,
+        // demanding motion inside it only produces a hunt around the point.
+        if (position.active(AXIS_NORTH) && position.active(AXIS_EAST)
+            && positionIsTheWholeInstruction(AXIS_NORTH)
+            && positionIsTheWholeInstruction(AXIS_EAST)) {
+            double deltaNorth = position.value(AXIS_NORTH) - northM;
+            double deltaEast = position.value(AXIS_EAST) - eastM;
+            double speed = Math.hypot(
+                actuatedVelocityMps[AXIS_NORTH], actuatedVelocityMps[AXIS_EAST]);
+            if (Math.hypot(deltaNorth, deltaEast) <= ARRIVAL_DEADBAND_M
+                && speed <= ARRIVAL_SPEED_MPS) {
+                northM = position.value(AXIS_NORTH);
+                eastM = position.value(AXIS_EAST);
+                setPosition(AXIS_NORTH, northM);
+                setPosition(AXIS_EAST, eastM);
+                actuatedVelocityMps[AXIS_NORTH] = 0.0;
+                actuatedVelocityMps[AXIS_EAST] = 0.0;
+                velocityNorthMps = 0.0;
+                velocityEastMps = 0.0;
+            }
+        }
+    }
+
+    /**
+     * True when the sender asked this axis to be somewhere and nothing else - no speed,
+     * no acceleration to fly it there with.
+     *
+     * <p>Those are the only axes where arriving is the vehicle's own decision. A PVA
+     * frame may command a position and a speed on the same axis, and then the position is
+     * a point on a trajectory whose speed the sender is feeding forward: the main
+     * project's own note on that is that a fixed point with a constant feed-forward keeps
+     * being pushed by the feed-forward, so the position loop can only chase it.
+     *
+     * <p>Snapping the arrival there does not chase it, it silences it. Measured before
+     * this gate: a frame holding the current point with a 0.5 m/s feed-forward moved the
+     * vehicle 0.00000 m in twenty ticks and left it standing still at 0.0000 m/s, because
+     * the per-axis snap put the position back on the target on every tick - the commanded
+     * speed was read, applied, and then undone before it could carry the vehicle anywhere.
+     */
+    private boolean positionIsTheWholeInstruction(int axis) {
+        return !velocity.active(axis) && !acceleration.active(axis);
     }
 
     private void updateYaw() {
@@ -633,22 +835,41 @@ public final class VirtualDroneState {
         }
     }
 
+    /**
+     * Attitude when nothing is asking for a lean: the vehicle levels itself under the
+     * rate loop, which is what a pilot sees after releasing the sticks.
+     *
+     * <p>While a setpoint is driving the vehicle the attitude is not "how fast am I
+     * going" - it is what the acceleration comes from, and
+     * {@link #applyThrustVectorMotion} owns it for that reason.
+     */
     private void updateAttitude() {
-        // Tilt is a body-frame attitude, so the NED velocity is rotated into the
-        // body frame first: a vehicle yawed 90 degrees while flying north shows
-        // roll, not pitch.
-        double cosYaw = Math.cos(yawRad);
-        double sinYaw = Math.sin(yawRad);
-        double bodyForward = velocityNorthMps * cosYaw + velocityEastMps * sinYaw;
-        double bodyRight = -velocityNorthMps * sinYaw + velocityEastMps * cosYaw;
-        double desiredPitch = -vehicleModel.maxTiltRad() * bodyForward / vehicleModel.maxHorizontalSpeedMps();
-        double desiredRoll = vehicleModel.maxTiltRad() * bodyRight / vehicleModel.maxHorizontalSpeedMps();
+        if (flightPhase == FlightPhase.FLYING && armed && setpointActive) {
+            return;
+        }
+        steerTowardTilt(0.0, 0.0);
+    }
+
+    /**
+     * The rate loop: the attitude moves toward a commanded lean with a first-order
+     * response, and the rates reported are the ones the integration actually used.
+     */
+    private void steerTowardTilt(double commandedRoll, double commandedPitch) {
+        double responseS = Math.max(TICK_SECONDS, vehicleModel.attitudeTimeConstantS());
+        double maxRate = maxAttitudeRateRadS();
         double previousRoll = rollRad;
         double previousPitch = pitchRad;
-        rollRad += (desiredRoll - rollRad) * ATTITUDE_RESPONSE;
-        pitchRad += (desiredPitch - pitchRad) * ATTITUDE_RESPONSE;
+        rollRateRadS = clamp((commandedRoll - rollRad) / responseS, maxRate);
+        pitchRateRadS = clamp((commandedPitch - pitchRad) / responseS, maxRate);
+        rollRad = wrapToPi(rollRad + rollRateRadS * TICK_SECONDS);
+        pitchRad = wrapToPi(pitchRad + pitchRateRadS * TICK_SECONDS);
         rollRateRadS = (rollRad - previousRoll) / TICK_SECONDS;
         pitchRateRadS = (pitchRad - previousPitch) / TICK_SECONDS;
+    }
+
+    /** How fast the attitude may move: the lean limit reached in the response time. */
+    private double maxAttitudeRateRadS() {
+        return vehicleModel.maxTiltRad() / Math.max(TICK_SECONDS, vehicleModel.attitudeTimeConstantS());
     }
 
     private double position(int axis) {
