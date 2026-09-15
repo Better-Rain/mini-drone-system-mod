@@ -140,7 +140,7 @@ class VirtualDroneStateTest {
         assertFalse(drone.snapshot().airborne());
 
         // The world reports the vehicle five metres up with nothing under it.
-        drone.adoptExternalPosition(0.0, 0.0, -5.0, false, false, false);
+        drone.adoptExternalPosition(0.0, 0.0, -5.0, false, false, false, false, false);
         drone.tick();
 
         assertTrue(drone.snapshot().airborne(), "it should be falling, not hanging there");
@@ -148,7 +148,7 @@ class VirtualDroneStateTest {
             // The world holds it up once it is back on the ground.
             drone.adoptExternalPosition(
                 drone.snapshot().northM(), drone.snapshot().eastM(),
-                Math.max(drone.snapshot().downM(), -0.0), false, true, true);
+                Math.max(drone.snapshot().downM(), -0.0), false, true, false, false, true);
             drone.tick();
         }
         assertFalse(drone.snapshot().airborne());
@@ -190,7 +190,7 @@ class VirtualDroneStateTest {
         assertTrue(drone.snapshot().airborne());
 
         // A wall stopped it 30 cm into the metre it asked for, one metre up.
-        drone.adoptExternalPosition(0.3, 0.0, -1.0, true, false, false);
+        drone.adoptExternalPosition(0.3, 0.0, -1.0, true, false, true, false, false);
 
         VirtualDroneSnapshot pressed = drone.snapshot();
         assertEquals(0.3, pressed.northM(), 0.0001);
@@ -209,7 +209,7 @@ class VirtualDroneStateTest {
         assertTrue(drone.snapshot().airborne());
 
         // The world reports the vehicle resting on the floor.
-        drone.adoptExternalPosition(0.0, 0.0, -0.0, false, true, true);
+        drone.adoptExternalPosition(0.0, 0.0, -0.0, false, true, false, false, true);
 
         VirtualDroneSnapshot landed = drone.snapshot();
         assertFalse(landed.airborne());

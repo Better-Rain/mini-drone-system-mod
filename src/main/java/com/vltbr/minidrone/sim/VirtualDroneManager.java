@@ -46,6 +46,8 @@ public final class VirtualDroneManager implements VirtualFlightController {
                 step.downM(),
                 step.blockedHorizontally(),
                 step.blockedVertically(),
+                step.blockedNorth(),
+                step.blockedEast(),
                 step.supported()
             );
             if (step.impact() == ImpactModel.Outcome.CRASH) {

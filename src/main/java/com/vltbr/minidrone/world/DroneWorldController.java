@@ -125,6 +125,7 @@ public final class DroneWorldController implements AutoCloseable {
         return new StepResult(
             ned[0], ned[1], ned[2],
             resolved.blockedHorizontally(), resolved.blockedVertically(),
+            resolved.blockedZ(), resolved.blockedX(),
             supported, impact);
     }
 
@@ -132,6 +133,7 @@ public final class DroneWorldController implements AutoCloseable {
     public record StepResult(
         double northM, double eastM, double downM,
         boolean blockedHorizontally, boolean blockedVertically,
+        boolean blockedNorth, boolean blockedEast,
         boolean supported, ImpactModel.Outcome impact
     ) {
     }

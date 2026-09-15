@@ -319,18 +319,38 @@ public final class VirtualDroneState {
         double down,
         boolean blockedHorizontally,
         boolean blockedVertically,
+        boolean blockedNorth,
+        boolean blockedEast,
         boolean supported
     ) {
         northM = north;
         eastM = east;
         downM = down;
         supportedByWorld = supported;
-        if (blockedHorizontally) {
-            velocityNorthMps = 0.0;
-            velocityEastMps = 0.0;
+
+        // A light touch is not a stop: the component into the surface comes back
+        // reversed (restitution) and the component along it loses speed to friction.
+        // Zeroing both is what made the vehicle stick to walls like a stamp.
+        double friction = vehicleModel.friction();
+        double restitution = vehicleModel.restitution();
+        if (blockedNorth) {
+            velocityNorthMps = ContactResponse.rebound(velocityNorthMps, restitution);
+            velocityEastMps = ContactResponse.slide(velocityEastMps, friction, TICK_SECONDS);
+        } else if (blockedEast) {
+            velocityEastMps = ContactResponse.rebound(velocityEastMps, restitution);
+            velocityNorthMps = ContactResponse.slide(velocityNorthMps, friction, TICK_SECONDS);
+        } else if (blockedHorizontally) {
+            velocityNorthMps = ContactResponse.slide(velocityNorthMps, friction, TICK_SECONDS);
+            velocityEastMps = ContactResponse.slide(velocityEastMps, friction, TICK_SECONDS);
         }
         if (blockedVertically) {
-            velocityDownMps = 0.0;
+            if (velocityDownMps > 0.0) {
+                // Touching down a little fast hops before it settles; a controlled
+                // descent barely does.
+                velocityDownMps = ContactResponse.rebound(velocityDownMps, restitution);
+            } else {
+                velocityDownMps = 0.0;
+            }
             fallSpeedMps = 0.0;
         }
         // Coming to rest is "the world is holding it up", not "the altitude reads
