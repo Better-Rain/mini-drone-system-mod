@@ -3,10 +3,14 @@ package com.vltbr.minidrone;
 import com.vltbr.minidrone.mavlink.MavlinkTransport;
 import com.vltbr.minidrone.mavlink.MavlinkLinkStatus;
 import com.vltbr.minidrone.mavlink.MocapFieldMetadata;
+import com.vltbr.minidrone.block.ModBlocks;
 import com.vltbr.minidrone.entity.ModEntityTypes;
+import com.vltbr.minidrone.item.ModItems;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
 import com.vltbr.minidrone.world.ArenaOrigin;
+import com.vltbr.minidrone.world.FieldMarkerHook;
+import com.vltbr.minidrone.world.FieldSelectorStore;
 import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.TrainingArenaController;
 import com.vltbr.minidrone.world.TrainingArenaLayout;
@@ -45,6 +49,8 @@ public final class MiniDroneMod implements ModInitializer {
     @Override
     public void onInitialize() {
         ModEntityTypes.initialize();
+        ModBlocks.initialize();
+        ModItems.initialize();
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
             dispatcher.register(
@@ -72,7 +78,18 @@ public final class MiniDroneMod implements ModInitializer {
                     .then(literal("field")
                         .then(literal("status").executes(context -> reportFieldStatus(context.getSource())))
                         .then(literal("clear").executes(context -> clearField(context.getSource())))
+                        .then(literal("scan")
+                            .executes(context -> scanFieldMarkers(context.getSource(), 32))
+                            .then(net.minecraft.commands.Commands.argument(
+                                "radius",
+                                com.mojang.brigadier.arguments.IntegerArgumentType.integer(4, 48))
+                                .executes(context -> scanFieldMarkers(
+                                    context.getSource(),
+                                    com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(
+                                        context, "radius")))))
                         .then(literal("set")
+                            .then(literal("selected")
+                                .executes(context -> setFieldFromSelector(context.getSource())))
                             .then(literal("corners")
                                 .then(net.minecraft.commands.Commands.argument(
                                     "first", BlockPosArgument.blockPos())
@@ -118,6 +135,9 @@ public final class MiniDroneMod implements ModInitializer {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             trainingArenaController = new TrainingArenaController(server);
             trainingFieldController = new TrainingFieldController(server, trainingArenaController);
+            // Marker blocks are registered statically and cannot hold the per-world
+            // controller, so they report through this bridge while a world runs.
+            FieldMarkerHook.install(trainingFieldController);
             droneManager = new VirtualDroneManager(server, trainingFieldController);
             mocapSettings = server.overworld().getDataStorage().computeIfAbsent(
                 VirtualMocapSettingsSavedData.factory(),
@@ -148,6 +168,7 @@ public final class MiniDroneMod implements ModInitializer {
             }
             droneManager = null;
             trainingArenaController = null;
+            FieldMarkerHook.uninstall(trainingFieldController);
             trainingFieldController = null;
             mocapSettings = null;
             LOGGER.info("Mini Drone System virtual flight controller stopped");
@@ -281,8 +302,82 @@ public final class MiniDroneMod implements ModInitializer {
         return 1;
     }
 
-    private int clearField(CommandSourceStack source) {
+    /**
+     * Turns the two points the selector item recorded into a field. The points are
+     * session state in the item, so this is the step that makes the measurement part
+     * of the world.
+     */
+    private int setFieldFromSelector(CommandSourceStack source) {
         if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal(
+                "This command measures the field the player selected; run it as a player."));
+            return 0;
+        }
+        var points = FieldSelectorStore.points(player.getUUID());
+        if (points.size() < FieldSelectorStore.MAX_POINTS) {
+            source.sendFailure(Component.literal(
+                "Record two opposite corners with the field selector item first (right-click a block twice)."));
+            return 0;
+        }
+        int[] first = points.get(0);
+        int[] second = points.get(1);
+        try {
+            var field = trainingFieldController.defineFromCorners(
+                new BlockPos(first[0], first[1], first[2]),
+                new BlockPos(second[0], second[1], second[2]),
+                TrainingFieldDefinition.Source.SELECTOR
+            );
+            applyFieldChange(source);
+            source.sendSuccess(() -> copyableMessage(
+                "Training field set from the selector: " + field.describe()), false);
+            return 1;
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal("Cannot define that field: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    /**
+     * Rebuilds the field from the marker blocks around the player. This is the way
+     * back for markers the registry never saw (placed by another tool) and the way to
+     * deliberately switch a typed-in field over to the markers.
+     */
+    private int scanFieldMarkers(CommandSourceStack source, int radius) {
+        if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal(
+                "The marker sweep searches around a player; run it as a player."));
+            return 0;
+        }
+        var field = trainingFieldController.scanMarkers(player, radius);
+        if (field == null) {
+            source.sendFailure(Component.literal(
+                "No field could be derived: place two field_corner blocks first (diagonal corners), "
+                    + "and optionally a field_center block for the origin. "
+                    + trainingFieldController.describeMarkers()));
+            return 0;
+        }
+        applyFieldChange(source);
+        source.sendSuccess(() -> copyableMessage(
+            "Training field derived from markers: " + field.describe()
+                + " (" + trainingFieldController.describeMarkers() + ")"), false);
+        return 1;
+    }
+
+    private int clearField(CommandSourceStack source) {        if (trainingFieldController == null) {
             source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
             return 0;
         }

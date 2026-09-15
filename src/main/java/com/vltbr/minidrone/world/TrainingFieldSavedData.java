@@ -2,6 +2,8 @@ package com.vltbr.minidrone.world;
 
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.level.saveddata.SavedData;
 
@@ -28,6 +30,12 @@ public final class TrainingFieldSavedData extends SavedData {
     private double originZ;
     private TrainingFieldDefinition.OriginMode originMode = TrainingFieldDefinition.OriginMode.CENTRE;
     private TrainingFieldDefinition.Source source = TrainingFieldDefinition.Source.CORNERS;
+    // Positions of the marker blocks the operator placed. They are recorded as they
+    // are placed and removed so a change can re-derive the field in constant time;
+    // a full sweep of the area is only needed to pick up markers this registry never
+    // saw (placed by another tool, or before the field existed).
+    private final java.util.List<int[]> cornerMarkers = new java.util.ArrayList<>();
+    private final java.util.List<int[]> centreMarkers = new java.util.ArrayList<>();
 
     public static Factory<TrainingFieldSavedData> factory() {
         return new Factory<>(
@@ -39,6 +47,8 @@ public final class TrainingFieldSavedData extends SavedData {
 
     public static TrainingFieldSavedData load(CompoundTag tag, HolderLookup.Provider registries) {
         TrainingFieldSavedData data = new TrainingFieldSavedData();
+        data.readMarkers(tag.getList("corner_markers", Tag.TAG_COMPOUND), data.cornerMarkers);
+        data.readMarkers(tag.getList("centre_markers", Tag.TAG_COMPOUND), data.centreMarkers);
         if (!tag.getBoolean("has_field")) {
             return data;
         }
@@ -93,8 +103,72 @@ public final class TrainingFieldSavedData extends SavedData {
         setDirty();
     }
 
+    private void readMarkers(ListTag tag, java.util.List<int[]> target) {
+        for (int index = 0; index < tag.size(); index++) {
+            CompoundTag entry = tag.getCompound(index);
+            target.add(new int[] {entry.getInt("x"), entry.getInt("y"), entry.getInt("z")});
+        }
+    }
+
+    private static ListTag writeMarkers(java.util.List<int[]> positions) {
+        ListTag tag = new ListTag();
+        for (int[] position : positions) {
+            CompoundTag entry = new CompoundTag();
+            entry.putInt("x", position[0]);
+            entry.putInt("y", position[1]);
+            entry.putInt("z", position[2]);
+            tag.add(entry);
+        }
+        return tag;
+    }
+
+    /** Recorded corner marker positions, as {@code {x, y, z}} triples. */
+    public java.util.List<int[]> cornerMarkers() {
+        return java.util.Collections.unmodifiableList(cornerMarkers);
+    }
+
+    /** Recorded centre marker positions, as {@code {x, y, z}} triples. */
+    public java.util.List<int[]> centreMarkers() {
+        return java.util.Collections.unmodifiableList(centreMarkers);
+    }
+
+    private static boolean samePosition(int[] position, int x, int y, int z) {
+        return position[0] == x && position[1] == y && position[2] == z;
+    }
+
+    /** Records or drops a marker position. Returns true when the registry changed. */
+    public boolean setMarker(boolean centre, int x, int y, int z, boolean placed) {
+        java.util.List<int[]> positions = centre ? centreMarkers : cornerMarkers;
+        boolean removed = positions.removeIf(position -> samePosition(position, x, y, z));
+        if (placed) {
+            positions.add(new int[] {x, y, z});
+        }
+        setDirty();
+        return placed || removed;
+    }
+
+    /** Replaces the whole marker registry, which is what a sweep produces. */
+    public void replaceMarkers(
+        java.util.List<int[]> corners,
+        java.util.List<int[]> centres
+    ) {
+        cornerMarkers.clear();
+        cornerMarkers.addAll(corners);
+        centreMarkers.clear();
+        centreMarkers.addAll(centres);
+        setDirty();
+    }
+
+    public void clearMarkers() {
+        cornerMarkers.clear();
+        centreMarkers.clear();
+        setDirty();
+    }
+
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
+        tag.put("corner_markers", writeMarkers(cornerMarkers));
+        tag.put("centre_markers", writeMarkers(centreMarkers));
         tag.putBoolean("has_field", present);
         if (!present) {
             return tag;

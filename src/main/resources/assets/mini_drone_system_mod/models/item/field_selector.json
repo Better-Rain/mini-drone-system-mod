@@ -1,0 +1,4 @@
+{
+  "parent": "item/generated",
+  "textures": { "layer0": "mini_drone_system_mod:item/field_selector" }
+}

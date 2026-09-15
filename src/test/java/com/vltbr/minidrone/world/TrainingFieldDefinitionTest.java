@@ -3,6 +3,7 @@ package com.vltbr.minidrone.world;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -143,5 +144,99 @@ class TrainingFieldDefinitionTest {
         assertEquals(7, field.maxX());
         assertEquals(-2, field.minZ());
         assertEquals(6, field.maxZ());
+    }
+
+    /**
+     * Markers are the block-based way to describe a field: the operator places two
+     * diagonal corners (or four) and the mod derives the rectangle from their
+     * bounding box.
+     */
+    @Test
+    void derivesAFieldFromCornerMarkers() {
+        TrainingFieldDefinition field = TrainingFieldDefinition.fromMarkers(
+            java.util.List.of(
+                new int[] {-10, 64, 20},
+                new int[] {10, 64, 4}
+            ),
+            null
+        );
+
+        assertEquals(21, field.widthM());
+        assertEquals(17, field.depthM());
+        assertEquals(64, field.topY());
+        assertEquals(TrainingFieldDefinition.Source.MARKERS, field.source());
+        assertTrue(field.isCentred());
+        assertEquals(0.5, field.originX(), EPSILON);
+        assertEquals(12.5, field.originZ(), EPSILON);
+    }
+
+    /** Four corners must describe the same rectangle as two diagonal ones. */
+    @Test
+    void fourCornersAndTwoCornersAgree() {
+        TrainingFieldDefinition two = TrainingFieldDefinition.fromMarkers(
+            java.util.List.of(
+                new int[] {0, 64, 0},
+                new int[] {20, 64, 8}
+            ),
+            null
+        );
+        TrainingFieldDefinition four = TrainingFieldDefinition.fromMarkers(
+            java.util.List.of(
+                new int[] {0, 64, 0},
+                new int[] {20, 64, 8},
+                new int[] {0, 64, 8},
+                new int[] {20, 64, 0}
+            ),
+            null
+        );
+
+        assertEquals(two.widthM(), four.widthM());
+        assertEquals(two.depthM(), four.depthM());
+        assertEquals(two.originX(), four.originX(), EPSILON);
+        assertEquals(two.originZ(), four.originZ(), EPSILON);
+    }
+
+    /** A centre marker names the origin, which is how an off-centre room is set up. */
+    @Test
+    void aCentreMarkerBecomesTheOrigin() {
+        TrainingFieldDefinition field = TrainingFieldDefinition.fromMarkers(
+            java.util.List.of(
+                new int[] {0, 64, 0},
+                new int[] {20, 64, 8}
+            ),
+            new int[] {0, 64, 0}
+        );
+
+        assertFalse(field.isCentred());
+        assertEquals(TrainingFieldDefinition.OriginMode.EXPLICIT, field.originMode());
+        assertEquals(0.5, field.originX(), EPSILON);
+        assertEquals(0.5, field.originZ(), EPSILON);
+        // 21 x 9 m field measured from its low corner.
+        assertEquals(10.0, field.centerOffsetM()[0], EPSILON);
+        assertEquals(4.0, field.centerOffsetM()[1], EPSILON);
+    }
+
+    /**
+     * One corner says where a corner is but not how big the field is; guessing a size
+     * would put a field in the world nobody asked for.
+     */
+    @Test
+    void refusesToGuessAFieldFromASingleCorner() {
+        assertNull(TrainingFieldDefinition.fromMarkers(
+            java.util.List.of(new int[] {0, 64, 0}), null));
+        assertNull(TrainingFieldDefinition.fromMarkers(java.util.List.of(), null));
+        assertNull(TrainingFieldDefinition.fromMarkers(null, null));
+    }
+
+    /** Markers spread wider than a field can be advertised produce nothing. */
+    @Test
+    void refusesMarkersThatAreTooFarApart() {
+        assertNull(TrainingFieldDefinition.fromMarkers(
+            java.util.List.of(
+                new int[] {0, 64, 0},
+                new int[] {400, 64, 0}
+            ),
+            null
+        ));
     }
 }

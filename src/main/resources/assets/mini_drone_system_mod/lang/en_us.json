@@ -1,4 +1,6 @@
 {
-  "entity.mini_drone_system_mod.drone": "Virtual Drone"
+  "entity.mini_drone_system_mod.drone": "Virtual drone",
+  "block.mini_drone_system_mod.field_corner": "Field corner marker",
+  "block.mini_drone_system_mod.field_center": "Field centre marker",
+  "item.mini_drone_system_mod.field_selector": "Field selector"
 }
-

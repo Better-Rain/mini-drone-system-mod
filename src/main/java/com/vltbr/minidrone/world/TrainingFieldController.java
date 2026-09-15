@@ -1,11 +1,17 @@
 package com.vltbr.minidrone.world;
 
 import com.vltbr.minidrone.MiniDroneMod;
+import com.vltbr.minidrone.block.ModBlocks;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.levelgen.Heightmap;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -23,6 +29,9 @@ public final class TrainingFieldController {
     private final MinecraftServer server;
     private final TrainingArenaController arenaController;
     private final TrainingFieldSavedData savedData;
+    /** One sweep reads one block state per column in a cube; keep it bounded. */
+    private static final int MAX_SCAN_RADIUS = 48;
+
     private final TrainingFieldDefinition instanceDefault;
 
     public TrainingFieldController(MinecraftServer server) {
@@ -120,10 +129,17 @@ public final class TrainingFieldController {
 
     /** Builds a field from two corners of the block the operator pointed at. */
     public TrainingFieldDefinition defineFromCorners(BlockPos first, BlockPos second) {
+        return defineFromCorners(first, second, TrainingFieldDefinition.Source.CORNERS);
+    }
+
+    /** Builds a field from two corners, labelled with where they came from. */
+    public TrainingFieldDefinition defineFromCorners(
+        BlockPos first, BlockPos second, TrainingFieldDefinition.Source source
+    ) {
         return defineManually(TrainingFieldDefinition.fromCorners(
             first.getX(), first.getZ(), second.getX(), second.getZ(),
             Math.min(first.getY(), second.getY()),
-            TrainingFieldDefinition.Source.CORNERS
+            source
         ));
     }
 
@@ -210,5 +226,115 @@ public final class TrainingFieldController {
     /** The field the beacon would advertise, for logging and command output. */
     public Optional<TrainingFieldDefinition> advertised() {
         return Optional.ofNullable(definition());
+    }
+
+    /**
+     * A marker block appeared or disappeared.
+     *
+     * <p>Automatic refreshes only touch a marker-derived field: an operator who typed
+     * a field in by hand must not have it replaced by whatever markers happen to be
+     * lying around the world. An explicit {@code /minidrone field scan} is a
+     * deliberate act and does replace it.
+     */
+    public void markerChanged(BlockPos pos, boolean centre, boolean placed) {
+        if (!savedData.setMarker(centre, pos.getX(), pos.getY(), pos.getZ(), placed)) {
+            return;
+        }
+        deriveFromMarkers(false);
+    }
+
+    /**
+     * Sweeps the area around a player for marker blocks and rebuilds the field from
+     * what is actually placed.
+     *
+     * <p>It exists because the block hooks only see markers placed while the registry
+     * was watching: markers put down by another tool, or before this feature existed,
+     * are found here. The sweep reads one block state per column in a cube, so it is
+     * a command, not something to run every tick.
+     */
+    public TrainingFieldDefinition scanMarkers(ServerPlayer player, int radius) {
+        int clamped = Math.max(4, Math.min(radius, MAX_SCAN_RADIUS));
+        ServerLevel level = server.overworld();
+        List<int[]> corners = new ArrayList<>();
+        List<int[]> centres = new ArrayList<>();
+        BlockPos origin = player.blockPosition();
+        for (int x = origin.getX() - clamped; x <= origin.getX() + clamped; x++) {
+            for (int z = origin.getZ() - clamped; z <= origin.getZ() + clamped; z++) {
+                for (int y = origin.getY() - clamped; y <= origin.getY() + clamped; y++) {
+                    BlockState state = level.getBlockState(new BlockPos(x, y, z));
+                    if (state.is(ModBlocks.FIELD_CORNER)) {
+                        corners.add(new int[] {x, y, z});
+                    } else if (state.is(ModBlocks.FIELD_CENTER)) {
+                        centres.add(new int[] {x, y, z});
+                    }
+                }
+            }
+        }
+        savedData.replaceMarkers(corners, centres);
+        MiniDroneMod.LOGGER.info(
+            "Field marker sweep within {} blocks of {}: {} corners, {} centre markers",
+            clamped, origin.toShortString(), corners.size(), centres.size());
+        return deriveFromMarkers(true);
+    }
+
+    /** Recorded marker count, for the status command. */
+    public String describeMarkers() {
+        return String.format(
+            Locale.ROOT,
+            "%d corner marker(s), %d centre marker(s) recorded",
+            savedData.cornerMarkers().size(),
+            savedData.centreMarkers().size()
+        );
+    }
+
+    /**
+     * Builds the field from the recorded markers. Returns null when they cannot
+     * describe one (fewer than two corners), in which case an explicit scan clears
+     * the marker-derived field rather than leaving a stale one behind.
+     */
+    private TrainingFieldDefinition deriveFromMarkers(boolean forced) {
+        TrainingFieldDefinition stored = savedData.field();
+        boolean markerSourced = stored == null
+            || stored.source() == TrainingFieldDefinition.Source.MARKERS;
+        if (!forced && !markerSourced) {
+            return null;
+        }
+
+        List<int[]> corners = new ArrayList<>();
+        for (int[] position : savedData.cornerMarkers()) {
+            if (stillHoldsMarker(position, ModBlocks.FIELD_CORNER)) {
+                corners.add(position);
+            }
+        }
+        int[] centre = null;
+        for (int[] position : savedData.centreMarkers()) {
+            if (stillHoldsMarker(position, ModBlocks.FIELD_CENTER)) {
+                centre = position;
+                break;
+            }
+        }
+
+        TrainingFieldDefinition derived;
+        try {
+            derived = TrainingFieldDefinition.fromMarkers(corners, centre);
+        } catch (IllegalArgumentException exception) {
+            MiniDroneMod.LOGGER.warn("Ignoring marker field that cannot be advertised: {}", exception.getMessage());
+            derived = null;
+        }
+        if (derived == null) {
+            if (forced) {
+                savedData.clearField();
+                MiniDroneMod.LOGGER.info("Marker sweep left no field to define");
+            }
+            return null;
+        }
+        return defineManually(derived);
+    }
+
+    /** A recorded marker may have been replaced since it was recorded. */
+    private boolean stillHoldsMarker(int[] position, Block marker) {
+        return server.overworld()
+            .getBlockState(new BlockPos(position[0], position[1], position[2]))
+            .is(marker);
     }
 }

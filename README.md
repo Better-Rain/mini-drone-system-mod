@@ -307,11 +307,25 @@ world.z = -north
 /minidrone field status                       # 当前场地：尺寸、范围、中心、原点、广播了什么
 /minidrone field set corners <角1> <角2>       # 两个对角的方块坐标（Y 取两者中较低的那个）
 /minidrone field set center <中心> <宽> <深>    # 中心方块 + 尺寸（米）
+/minidrone field set selected                 # 用「场地选择器」右键记录的两个角点
+/minidrone field scan [半径]                  # 扫一圈标记方块并据其重建场地（默认半径 32，上限 48）
 /minidrone field origin center                # 原点 = 场地中心（默认）
 /minidrone field origin corner                # 原点 = 最小角方块中心（真机房间习惯）
 /minidrone field origin at <方块坐标>          # 原点 = 任意方块中心
 /minidrone field clear                        # 删除手动定义（有训练场时会退回按训练场算）
 ```
+
+**也可以直接把场地"摆"出来**：新增两个模组方块（创造模式「功能方块」栏，或 `/give` 拿）：
+
+- **场地角标 `field_corner`**：放在场地对角。**两个对角就够**（四个当然也行，取的是它们的包围盒）；
+- **场地中心标 `field_center`**：可选，放了它就把**原点**钉在这个方块上（真机房间原点常在角上就是这么设定的），
+  不放则以包围盒中心为原点。
+
+放置/拆除标记方块会立刻重算并重新广播；`field scan` 用于补上模组没看见的标记（例如用别的工具放的、或本次改动之前放的）。
+自动重算只在"当前场地本来就来自标记"时发生——你手敲的场地不会被地上的方块悄悄覆盖，想切换用 `field scan`。
+
+还有 **「场地选择器」物品**（创造模式「工具与实用物品」栏）：对着一个方块右键记录角点，再对对角右键，
+然后 `/minidrone field set selected`。角点只保存在本次会话里，它是一把卷尺，不是定义：定义落到世界里之后就不再依赖它。
 
 `field status` 会一次说清：场地尺寸/边界/表面层 Y、几何中心、NED 原点在世界里的坐标、
 原点规则、以及**实际广播出去**的 `field_size_m` / `field_centered_at_world_origin` / `field_center_m`——
@@ -319,6 +333,10 @@ world.z = -north
 
 优先级：**手动定义 > 模组生成的训练场 > 启动默认值**。所以 `arena clear` 清掉生成平台时，
 你手量手填的场地不会跟着消失；反过来 `/minidrone field clear` 之后会退回按训练场算。
+
+三个标记/工具类资源都是自绘的：16×16 贴图由 `node scripts/generate-field-textures.mjs` 生成（只用 Node 的 zlib，
+不依赖任何图像库），改颜色或形状就改脚本再跑一次，仓库里存的是它的输出而不是不可复现的二进制。
+方块/物品的模型与 blockstate 在 `src/main/resources/assets/mini_drone_system_mod/` 下，中英文名在 `lang/`。
 
 不想在游戏里敲命令时，也可以在启动参数里给实例一个默认场地（Y 省略就用场地中心处的地面高度）：
 

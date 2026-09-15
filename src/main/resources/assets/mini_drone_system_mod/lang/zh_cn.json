@@ -1,4 +1,6 @@
 {
-  "entity.mini_drone_system_mod.drone": "虚拟无人机"
+  "entity.mini_drone_system_mod.drone": "虚拟无人机",
+  "block.mini_drone_system_mod.field_corner": "场地角标",
+  "block.mini_drone_system_mod.field_center": "场地中心标",
+  "item.mini_drone_system_mod.field_selector": "场地选择器"
 }
-

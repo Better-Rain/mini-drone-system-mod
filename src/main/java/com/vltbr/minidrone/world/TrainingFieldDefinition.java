@@ -183,6 +183,63 @@ public record TrainingFieldDefinition(
         return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
     }
 
+    /**
+     * Derives a field from marker blocks the operator placed, as {@code {x, y, z}}
+     * triples.
+     *
+     * <p>Two diagonal corner markers are enough - the field is their bounding box,
+     * and four corners give the same box - so a partly broken or partly placed set
+     * still describes a field instead of failing. An optional centre marker names
+     * the origin (which is how a room with its capture origin off centre is set up);
+     * without one the origin is the centre of the box.
+     *
+     * <p>Returns null when there is nothing to derive from: one corner alone says
+     * where a corner is but not how big the field is, and guessing a size would put
+     * a field in the world that nobody asked for.
+     *
+     * <p>Takes plain coordinates rather than {@code BlockPos} so the geometric part
+     * stays testable without the Minecraft classpath, which is where every other
+     * rule in this record is checked too.
+     */
+    public static TrainingFieldDefinition fromMarkers(
+        java.util.List<int[]> cornerMarkers,
+        int[] centreMarker
+    ) {
+        if (cornerMarkers == null || cornerMarkers.size() < 2) {
+            return null;
+        }
+        int minX = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+        int topY = Integer.MAX_VALUE;
+        for (int[] corner : cornerMarkers) {
+            if (corner == null || corner.length < 3) {
+                return null;
+            }
+            minX = Math.min(minX, corner[0]);
+            maxX = Math.max(maxX, corner[0]);
+            minZ = Math.min(minZ, corner[2]);
+            maxZ = Math.max(maxZ, corner[2]);
+            // The field plane is the lowest marked layer, matching what the
+            // coordinate commands do when their two corners differ in Y.
+            topY = Math.min(topY, corner[1]);
+        }
+        if (maxX - minX + 1 > MAX_SIZE_M || maxZ - minZ + 1 > MAX_SIZE_M) {
+            return null;
+        }
+        TrainingFieldDefinition field =
+            fromCorners(minX, minZ, maxX, maxZ, topY, Source.MARKERS);
+        if (centreMarker == null || centreMarker.length < 3) {
+            return field;
+        }
+        return field.withOrigin(
+            centreMarker[0] + 0.5,
+            centreMarker[2] + 0.5,
+            OriginMode.EXPLICIT
+        );
+    }
+
     /** Human-readable summary for chat output; ASCII only. */
     public String describe() {
         return String.format(
