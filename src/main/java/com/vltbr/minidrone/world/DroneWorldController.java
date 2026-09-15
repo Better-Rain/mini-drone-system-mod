@@ -3,9 +3,11 @@ package com.vltbr.minidrone.world;
 import com.vltbr.minidrone.MiniDroneMod;
 import com.vltbr.minidrone.entity.DroneEntity;
 import com.vltbr.minidrone.entity.ModEntityTypes;
+import com.vltbr.minidrone.sim.PhysicsStep;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 
@@ -14,6 +16,11 @@ import java.util.Locale;
 public final class DroneWorldController implements AutoCloseable {
     private static final double HOME_DISTANCE_FROM_PLAYER = 2.0;
     private static final double HOME_HEIGHT_OFFSET = 0.1;
+    /** Half the entity's bounding box height: NED measures to the feet, the entity to its centre. */
+    static final double HALF_HEIGHT_M = 0.175;
+    static final double HALF_WIDTH_M = 0.45;
+    /** A step bigger than this is a carry (spawn, hand placement), not a flight. */
+    static final double MAX_PHYSICS_STEP_M = 1.5;
 
     private final MinecraftServer server;
     private final TrainingFieldController fieldController;
@@ -30,12 +37,87 @@ public final class DroneWorldController implements AutoCloseable {
     }
 
     public void tick(VirtualDroneSnapshot snapshot) {
+        simulateStep(snapshot);
+    }
+
+    /**
+     * Moves the vehicle by what the flight controller asked for and reports where the
+     * world let it go.
+     *
+     * <p>The plant still integrates its own motion - that is what the setpoints mean -
+     * but the world has the last word: collision with block shapes is resolved by
+     * {@link PhysicsStep}, with this level as the authority on what is solid, so the
+     * vehicle stops at walls, slides along them and rests on whatever it lands on. The
+     * position the world allowed is then written back into the simulation, so the
+     * telemetry describes the vehicle that is actually there rather than the one the
+     * controller wished for.
+     *
+     * <p>A step larger than {@link #MAX_PHYSICS_STEP_M} is a carry - spawning, hand
+     * placement, or the first frame after the operator moved the vehicle - and is
+     * applied directly, because that is what carrying something means.
+     */
+    public StepResult simulateStep(VirtualDroneSnapshot snapshot) {
         if (entity == null || entity.isRemoved()) {
             spawnForFirstPlayer(snapshot);
         }
-        if (entity != null && transform != null) {
-            entity.applySnapshot(snapshot, transform.toWorldPose(snapshot));
+        if (entity == null || transform == null) {
+            return null;
         }
+
+        WorldPose wanted = transform.toWorldPose(snapshot);
+        // NED measures to the vehicle feet; the entity position is its centre.
+        double wantedCentreY = wanted.y() + HALF_HEIGHT_M;
+        Vec3 current = entity.position();
+        double dx = wanted.x() - current.x;
+        double dy = wantedCentreY - current.y;
+        double dz = wanted.z() - current.z;
+
+        PhysicsStep.Result resolved;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > MAX_PHYSICS_STEP_M) {
+            resolved = new PhysicsStep.Result(
+                wanted.x(), wantedCentreY, wanted.z(), false, false, false);
+        } else {
+            resolved = PhysicsStep.resolve(
+                current.x, current.y, current.z,
+                dx, dy, dz,
+                HALF_WIDTH_M, HALF_HEIGHT_M,
+                this::isBoxFree
+            );
+        }
+
+        entity.setPos(resolved.x(), resolved.y(), resolved.z());
+        entity.setYRot(wanted.yawDegrees());
+        entity.setXRot(wanted.pitchDegrees());
+        entity.setDeltaMovement(new Vec3(
+            -snapshot.velocityEastMps(),
+            -snapshot.velocityDownMps(),
+            -snapshot.velocityNorthMps()
+        ));
+
+        double[] ned = DronePlacement.nedOffsetFor(
+            transform, resolved.x(), resolved.y() - HALF_HEIGHT_M, resolved.z());
+        return new StepResult(
+            ned[0], ned[1], ned[2],
+            resolved.blockedHorizontally(), resolved.blockedVertically());
+    }
+
+    /** Where the world let the vehicle go, in local NED, and what stopped it. */
+    public record StepResult(
+        double northM, double eastM, double downM,
+        boolean blockedHorizontally, boolean blockedVertically
+    ) {
+    }
+
+    /**
+     * Whether the vehicle fits at that box.
+     *
+     * <p>The level answers with the shapes of the blocks that overlap it, which is the
+     * same list the game uses for everything else - so "solid" means whatever this
+     * world says it means, slabs, stairs and fences included.
+     */
+    private boolean isBoxFree(double[] box) {
+        AABB candidate = new AABB(box[0], box[1], box[2], box[3], box[4], box[5]);
+        return !server.overworld().getBlockCollisions(entity, candidate).iterator().hasNext();
     }
 
     /**

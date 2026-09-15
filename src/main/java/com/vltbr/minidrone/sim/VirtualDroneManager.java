@@ -25,10 +25,26 @@ public final class VirtualDroneManager implements VirtualFlightController {
         publish();
     }
 
+    /**
+     * One control step: the plant integrates what the setpoints asked for, the world
+     * resolves that against the blocks, and the world's answer becomes the vehicle's
+     * position before anything is published. Publishing first and moving afterwards -
+     * which is what this used to do - put a wish into the telemetry and the truth in
+     * the entity.
+     */
     public void tick() {
         primaryDrone.tick();
+        DroneWorldController.StepResult step = worldController.simulateStep(primaryDrone.snapshot());
+        if (step != null) {
+            primaryDrone.adoptExternalPosition(
+                step.northM(),
+                step.eastM(),
+                step.downM(),
+                step.blockedHorizontally(),
+                step.blockedVertically()
+            );
+        }
         publish();
-        worldController.tick(snapshot());
     }
 
     public VirtualDroneState primaryDrone() {

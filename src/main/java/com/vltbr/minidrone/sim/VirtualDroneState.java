@@ -252,6 +252,46 @@ public final class VirtualDroneState {
     }
 
 
+    /**
+     * Takes the position the world actually allowed, and what stopped the vehicle
+     * getting further.
+     *
+     * <p>This is what makes the telemetry honest: the plant integrates what the
+     * setpoints asked for, the world resolves it against the blocks, and the result
+     * comes back here. A vehicle pressed against a wall therefore reports standing
+     * still, not the speed it would like to be doing, and a vehicle that has come to
+     * rest on something finishes its descent instead of hovering a centimetre above it
+     * forever.
+     */
+    public void adoptExternalPosition(
+        double north,
+        double east,
+        double down,
+        boolean blockedHorizontally,
+        boolean blockedVertically
+    ) {
+        northM = north;
+        eastM = east;
+        downM = down;
+        if (blockedHorizontally) {
+            velocityNorthMps = 0.0;
+            velocityEastMps = 0.0;
+        }
+        if (blockedVertically) {
+            velocityDownMps = 0.0;
+            fallSpeedMps = 0.0;
+        }
+        if (down >= -GROUND_EPSILON_M && blockedVertically) {
+            downM = 0.0;
+            if (flightPhase == FlightPhase.FALLING) {
+                flightPhase = FlightPhase.LANDED;
+            } else if (flightPhase == FlightPhase.LANDING) {
+                armed = false;
+                flightPhase = FlightPhase.LANDED;
+            }
+        }
+    }
+
     private void applyChannel(
         Channel channel,
         LocalSetpoint.Axis north,

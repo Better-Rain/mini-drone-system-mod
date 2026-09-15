@@ -120,6 +120,50 @@ class VirtualDroneStateTest {
         assertFalse(drone.setLocalPosition(1.0, 1.0, -1.0));
     }
 
+    /**
+     * The world has the last word: whatever position it resolved is the one the
+     * telemetry reports, and a blocked axis must not keep claiming speed.
+     */
+    @Test
+    void adoptsThePositionTheWorldAllowed() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+        drone.setArmed(true);
+        drone.takeoff(2.0);
+        for (int tick = 0; tick < 60; tick++) {
+            drone.tick();
+        }
+        assertTrue(drone.snapshot().airborne());
+
+        // A wall stopped it 30 cm into the metre it asked for, one metre up.
+        drone.adoptExternalPosition(0.3, 0.0, -1.0, true, false);
+
+        VirtualDroneSnapshot pressed = drone.snapshot();
+        assertEquals(0.3, pressed.northM(), 0.0001);
+        assertEquals(-1.0, pressed.downM(), 0.0001);
+        assertEquals(0.0, pressed.velocityNorthMps(), 0.0001);
+        assertEquals(0.0, pressed.velocityEastMps(), 0.0001);
+        assertTrue(pressed.airborne());
+    }
+
+    /** Landing on a block finishes the descent instead of hovering above it. */
+    @Test
+    void finishingOnSolidGroundEndsTheFall() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+        assertTrue(drone.setLocalPosition(0.0, 0.0, -2.0));
+        assertTrue(drone.snapshot().airborne());
+
+        // The world reports the vehicle resting on the floor.
+        drone.adoptExternalPosition(0.0, 0.0, -0.0, false, true);
+
+        VirtualDroneSnapshot landed = drone.snapshot();
+        assertFalse(landed.airborne());
+        assertEquals(0.0, landed.downM(), 0.0001);
+        assertEquals(0.0, landed.velocityDownMps(), 0.0001);
+        assertEquals(1, MavlinkMessages.extendedSysState(landed)[1]);
+    }
+
     @Test
     void landingReachesGroundAndDisarms() {
         VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
