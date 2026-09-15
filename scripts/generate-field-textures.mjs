@@ -168,10 +168,36 @@ function selectorItem() {
     return pixels;
 }
 
+// A quad-rotor seen from the side, carrying a downward arrow: "put the drone here".
+function dronePlacementItem() {
+    const pixels = createCanvas(CLEAR);
+    const BODY = [214, 222, 232, 255];
+    const ROTOR = CYAN;
+    // Rotors.
+    fillRect(pixels, 2, 3, 5, 3, ROTOR);
+    fillRect(pixels, 10, 3, 13, 3, ROTOR);
+    setPixel(pixels, 3, 4, ROTOR);
+    setPixel(pixels, 12, 4, ROTOR);
+    // Airframe: two arms meeting at a body in the middle.
+    fillRect(pixels, 4, 4, 5, 5, BODY);
+    fillRect(pixels, 10, 4, 11, 5, BODY);
+    fillRect(pixels, 6, 5, 9, 6, BODY);
+    fillRect(pixels, 7, 7, 8, 8, BODY);
+    // Landing point: a short arrow pointing down at where it will sit.
+    fillRect(pixels, 7, 10, 8, 12, WHITE);
+    setPixel(pixels, 6, 12, WHITE);
+    setPixel(pixels, 9, 12, WHITE);
+    setPixel(pixels, 5, 13, WHITE);
+    setPixel(pixels, 10, 13, WHITE);
+    fillRect(pixels, 4, 15, 11, 15, BODY);
+    return pixels;
+}
+
 const textures = [
     ['block/field_corner.png', cornerMarker()],
     ['block/field_center.png', centreMarker()],
-    ['item/field_selector.png', selectorItem()]
+    ['item/field_selector.png', selectorItem()],
+    ['item/drone_placement.png', dronePlacementItem()]
 ];
 
 for (const [relativePath, pixels] of textures) {

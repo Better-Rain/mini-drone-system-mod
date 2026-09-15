@@ -33,6 +33,18 @@ public final class TrainingFieldController {
     private static final int MAX_SCAN_RADIUS = 48;
 
     private final TrainingFieldDefinition instanceDefault;
+    /**
+     * Notified whenever the field in effect changes, so the beacon follows.
+     *
+     * <p>It exists because the field has more than one author: commands, marker
+     * blocks, the selector item and a sweep all change it. Publishing from the
+     * command handlers only meant a marker change updated the world data and the
+     * log while the monitoring side kept seeing the previous field until somebody
+     * ran a command - measured in a live session, where seven "defined by hand"
+     * lines appeared with only three "Advertising" lines, each right after a
+     * command.
+     */
+    private volatile Runnable changeListener;
 
     public TrainingFieldController(MinecraftServer server) {
         this(server, new TrainingArenaController(server));
@@ -44,6 +56,18 @@ public final class TrainingFieldController {
         this.savedData = server.overworld().getDataStorage()
             .computeIfAbsent(TrainingFieldSavedData.factory(), TrainingFieldSavedData.DATA_ID);
         this.instanceDefault = TrainingFieldDefaults.fromSystemProperties().orElse(null);
+    }
+
+    /** The transport sets this so any change reaches the health beacon. */
+    public void setChangeListener(Runnable listener) {
+        this.changeListener = listener;
+    }
+
+    private void notifyChanged() {
+        Runnable listener = changeListener;
+        if (listener != null) {
+            listener.run();
+        }
     }
 
     public TrainingArenaController arena() {
@@ -69,11 +93,12 @@ public final class TrainingFieldController {
         return definition() != null;
     }
 
-    /** Records the operator's definition and returns it. */
+    /** Records the operator's definition, returns it, and publishes it. */
     public TrainingFieldDefinition defineManually(TrainingFieldDefinition field) {
         TrainingFieldDefinition resolved = withGroundResolved(field);
         savedData.setField(resolved);
         MiniDroneMod.LOGGER.info("Training field defined by hand: {}", resolved.describe());
+        notifyChanged();
         return resolved;
     }
 
@@ -99,6 +124,7 @@ public final class TrainingFieldController {
         savedData.clearField();
         if (had) {
             MiniDroneMod.LOGGER.info("Hand-made training field cleared");
+            notifyChanged();
         }
         return had;
     }

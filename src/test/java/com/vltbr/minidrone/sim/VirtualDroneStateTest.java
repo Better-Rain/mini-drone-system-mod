@@ -81,6 +81,45 @@ class VirtualDroneStateTest {
         assertTrue(drone.snapshot().airborne());
     }
 
+    /**
+     * Hand placement: the operator carries the vehicle to a spot, so its local NED
+     * position becomes an offset rather than zero. On the ground it just rests there;
+     * placed in the air it is an unpowered vehicle, which falls - the same rule a
+     * forced disarm follows, so the two cannot disagree.
+     */
+    @Test
+    void placingByHandMovesTheLocalPosition() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+
+        assertTrue(drone.setLocalPosition(2.0, -3.5, 0.0));
+        VirtualDroneSnapshot placed = drone.snapshot();
+        assertEquals(2.0, placed.northM(), 0.0001);
+        assertEquals(-3.5, placed.eastM(), 0.0001);
+        assertFalse(placed.airborne());
+        assertEquals(1, MavlinkMessages.extendedSysState(placed)[1]);
+
+        // Placed in the air, it comes down on its own.
+        assertTrue(drone.setLocalPosition(1.0, 1.0, -4.0));
+        assertTrue(drone.snapshot().airborne());
+        for (int tick = 0; tick < 200 && drone.snapshot().airborne(); tick++) {
+            drone.tick();
+        }
+        assertFalse(drone.snapshot().airborne(), "a hand-placed drone in the air never landed");
+        assertEquals(1.0, drone.snapshot().northM(), 0.0001);
+        assertEquals(1.0, drone.snapshot().eastM(), 0.0001);
+    }
+
+    /** Carrying an armed vehicle around would be a surprise, so it is refused. */
+    @Test
+    void refusesToPlaceAnArmedDrone() {
+        VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+        drone.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED);
+        drone.setArmed(true);
+
+        assertFalse(drone.setLocalPosition(1.0, 1.0, -1.0));
+    }
+
     @Test
     void landingReachesGroundAndDisarms() {
         VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");

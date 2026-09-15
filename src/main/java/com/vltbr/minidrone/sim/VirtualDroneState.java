@@ -221,6 +221,37 @@ public final class VirtualDroneState {
         return true;
     }
 
+    /**
+     * Puts the vehicle at a given local NED offset, as if the operator had carried
+     * it there.
+     *
+     * <p>Allowed while disarmed at any altitude, because that is what placing the
+     * drone by hand means - and then the same rule as a forced disarm applies: an
+     * unpowered vehicle in the air does not hover, it falls. Placing it on the ground
+     * simply leaves it resting there.
+     */
+    public boolean setLocalPosition(double north, double east, double down) {
+        if (armed) {
+            return false;
+        }
+        clearSetpoint();
+        northM = north;
+        eastM = east;
+        downM = down;
+        velocityNorthMps = 0.0;
+        velocityEastMps = 0.0;
+        velocityDownMps = 0.0;
+        rollRad = 0.0;
+        pitchRad = 0.0;
+        rollRateRadS = 0.0;
+        pitchRateRadS = 0.0;
+        fallSpeedMps = 0.0;
+        customMode = MavlinkProtocol.ARDUCOPTER_MODE_GUIDED;
+        flightPhase = down < -GROUND_EPSILON_M ? FlightPhase.FALLING : FlightPhase.LANDED;
+        return true;
+    }
+
+
     private void applyChannel(
         Channel channel,
         LocalSetpoint.Axis north,

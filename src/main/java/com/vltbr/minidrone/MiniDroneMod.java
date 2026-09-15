@@ -9,6 +9,7 @@ import com.vltbr.minidrone.item.ModItems;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
 import com.vltbr.minidrone.world.ArenaOrigin;
+import com.vltbr.minidrone.world.DronePlacementHook;
 import com.vltbr.minidrone.world.FieldMarkerHook;
 import com.vltbr.minidrone.world.FieldSelectorStore;
 import com.vltbr.minidrone.world.DroneWorldController;
@@ -75,6 +76,15 @@ public final class MiniDroneMod implements ModInitializer {
                                     BlockPosArgument.getBlockPos(context, "center")))))
                         .then(literal("status").executes(context -> reportArenaStatus(context.getSource())))
                         .then(literal("clear").executes(context -> clearArena(context.getSource()))))
+                        .then(literal("drone")
+                            .then(literal("place")
+                                .executes(context -> placeDrone(context.getSource(), null))
+                                .then(net.minecraft.commands.Commands.argument(
+                                    "pos", BlockPosArgument.blockPos())
+                                    .executes(context -> placeDrone(
+                                        context.getSource(),
+                                        BlockPosArgument.getBlockPos(context, "pos")))))
+                            .then(literal("reset").executes(context -> resetDrone(context.getSource()))))
                     .then(literal("field")
                         .then(literal("status").executes(context -> reportFieldStatus(context.getSource())))
                         .then(literal("clear").executes(context -> clearField(context.getSource())))
@@ -138,6 +148,8 @@ public final class MiniDroneMod implements ModInitializer {
             // Marker blocks are registered statically and cannot hold the per-world
             // controller, so they report through this bridge while a world runs.
             FieldMarkerHook.install(trainingFieldController);
+            trainingFieldController.setChangeListener(this::publishFieldMetadata);
+            DronePlacementHook.install(droneManager);
             droneManager = new VirtualDroneManager(server, trainingFieldController);
             mocapSettings = server.overworld().getDataStorage().computeIfAbsent(
                 VirtualMocapSettingsSavedData.factory(),
@@ -169,6 +181,8 @@ public final class MiniDroneMod implements ModInitializer {
             droneManager = null;
             trainingArenaController = null;
             FieldMarkerHook.uninstall(trainingFieldController);
+            trainingFieldController.setChangeListener(null);
+            DronePlacementHook.uninstall(droneManager);
             trainingFieldController = null;
             mocapSettings = null;
             LOGGER.info("Mini Drone System virtual flight controller stopped");
@@ -221,6 +235,85 @@ public final class MiniDroneMod implements ModInitializer {
             field.topY() + ArenaOrigin.PAD_SURFACE_OFFSET_M,
             field.originZ()
         );
+    }
+
+    /**
+     * Carries the drone to a point in the world (the player's own block by default).
+     *
+     * <p>Separate from the field commands on purpose: changing the field moves the
+     * origin and leaves the vehicle alone, while this moves the vehicle and leaves the
+     * field alone.
+     */
+    private int placeDrone(CommandSourceStack source, BlockPos target) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        final BlockPos resolved;
+        if (target != null) {
+            resolved = target;
+        } else {
+            try {
+                resolved = source.getPlayerOrException().blockPosition();
+            } catch (Exception exception) {
+                source.sendFailure(Component.literal(
+                    "Run this as a player or pass a position: /minidrone drone place <pos>"));
+                return 0;
+            }
+        }
+        var result = droneManager.placeAt(
+            resolved.getX() + 0.5, resolved.getY(), resolved.getZ() + 0.5);
+        switch (result) {
+            case PLACED -> {
+                source.sendSuccess(() -> copyableMessage(String.format(
+                    "Virtual drone placed at (%d, %d, %d); the field and its origin did not move",
+                    resolved.getX(), resolved.getY(), resolved.getZ())), false);
+                return 1;
+            }
+            case DRONE_ARMED -> {
+                source.sendFailure(Component.literal(
+                    "Land and disarm the virtual drone before placing it."));
+                return 0;
+            }
+            default -> {
+                source.sendFailure(Component.literal(
+                    "No training field is defined yet, so the drone has no origin to be placed relative to."));
+                return 0;
+            }
+        }
+    }
+
+    /** Puts the drone back on the field origin: the explicit reset. */
+    private int resetDrone(CommandSourceStack source) {
+        if (droneManager == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("This command needs a player to reset the origin for."));
+            return 0;
+        }
+        var result = droneManager.resetFlightOrigin(player);
+        switch (result) {
+            case RESET -> {
+                source.sendSuccess(() -> copyableMessage(
+                    "Virtual drone reset to the field origin: LOCAL_POSITION_NED (0, 0, 0)"), false);
+                return 1;
+            }
+            case DRONE_ACTIVE -> {
+                source.sendFailure(Component.literal(
+                    "Land and disarm the virtual drone before resetting its origin."));
+                return 0;
+            }
+            default -> {
+                source.sendFailure(Component.literal(
+                    "The virtual flight origin can only be reset in the Overworld."));
+                return 0;
+            }
+        }
     }
 
     private int reportFieldStatus(CommandSourceStack source) {
@@ -396,17 +489,17 @@ public final class MiniDroneMod implements ModInitializer {
      * advertises something new, the virtual origin moves, and the drone has to be
      * re-placed so the pilot sees it where the new origin says it is.
      */
+    /**
+     * A field change publishes itself: the controller notifies the transport whenever
+     * the field in effect changes, whichever path changed it (command, marker block,
+     * selector or sweep). What used to happen here - re-placing the drone - is gone on
+     * purpose: moving field data must not teleport the vehicle, because the operator
+     * can also place it by hand. Use /minidrone drone reset to put it back on the
+     * origin.
+     */
     private void applyFieldChange(CommandSourceStack source) {
-        publishFieldMetadata();
-        ServerPlayer player;
-        try {
-            player = source.getPlayerOrException();
-        } catch (Exception exception) {
-            return;
-        }
-        if (droneManager != null) {
-            droneManager.resetFlightOrigin(player);
-        }
+        // Nothing beyond what the controller already published; kept as the single
+        // place the field commands call so the behaviour is documented once.
     }
 
     private int reportStatus(CommandSourceStack source) {

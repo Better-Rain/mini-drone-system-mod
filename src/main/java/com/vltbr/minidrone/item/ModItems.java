@@ -18,6 +18,11 @@ public final class ModItems {
         MiniDroneMod.id("field_selector"),
         new FieldSelectorItem(new Item.Properties().stacksTo(1))
     );
+    public static final Item DRONE_PLACEMENT = Registry.register(
+        BuiltInRegistries.ITEM,
+        MiniDroneMod.id("drone_placement"),
+        new DronePlacementItem(new Item.Properties().stacksTo(1))
+    );
 
     public static void initialize() {
         ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS)
@@ -26,7 +31,10 @@ public final class ModItems {
                 entries.accept(ModBlocks.FIELD_CENTER);
             });
         ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.TOOLS_AND_UTILITIES)
-            .register(entries -> entries.accept(FIELD_SELECTOR));
+            .register(entries -> {
+                entries.accept(FIELD_SELECTOR);
+                entries.accept(DRONE_PLACEMENT);
+            });
     }
 
     private ModItems() {

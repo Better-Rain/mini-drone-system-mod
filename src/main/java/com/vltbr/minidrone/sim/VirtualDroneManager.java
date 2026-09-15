@@ -1,5 +1,6 @@
 package com.vltbr.minidrone.sim;
 
+import com.vltbr.minidrone.world.DronePlacement;
 import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.NedWorldTransform;
 import com.vltbr.minidrone.world.TrainingFieldController;
@@ -92,6 +93,37 @@ public final class VirtualDroneManager implements VirtualFlightController {
 
     public NedWorldTransform flightOrigin() {
         return worldController.origin();
+    }
+
+    /**
+     * Carries the drone to a world point, keeping the field and its origin where they
+     * are.
+     *
+     * <p>This is the manual placement path: the operator says "the vehicle is here",
+     * so its local NED position becomes the offset from the origin. It is deliberately
+     * the opposite of changing the field, where the origin moves and the vehicle
+     * stays put.
+     */
+    public PlacementResult placeAt(double worldX, double worldY, double worldZ) {
+        NedWorldTransform origin = worldController.origin();
+        if (origin == null) {
+            return PlacementResult.NO_FIELD;
+        }
+        double[] ned = DronePlacement.nedOffsetFor(origin, worldX, worldY, worldZ);
+        if (!primaryDrone.setLocalPosition(ned[0], ned[1], ned[2])) {
+            return PlacementResult.DRONE_ARMED;
+        }
+        publish();
+        return PlacementResult.PLACED;
+    }
+
+    /** What a placement attempt did, so the command and the item can explain it. */
+    public enum PlacementResult {
+        PLACED,
+        /** No field defines an origin, so there is nothing to be relative to. */
+        NO_FIELD,
+        /** An armed vehicle is not carried around. */
+        DRONE_ARMED
     }
 
     public MinecraftServer server() {
