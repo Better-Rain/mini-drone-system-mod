@@ -9,6 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class VirtualDroneStateTest {
+    /** The plant's control period, mirrored so the expectations can be derived from it. */
+    private static final double TICK_SECONDS = 0.05;
+
     @Test
     void requiresGuidedModeBeforeArmingAndTakeoff() {
         VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
@@ -237,6 +240,13 @@ class VirtualDroneStateTest {
         assertEquals(9, landed.customMode());
     }
 
+    /**
+     * A position target is tracked at the speed the flight controller may ask for, and
+     * the airframe cannot jump to that speed: thrust takes time to build, so the first
+     * tick buys one tick of the first-order response, the approach is monotone while
+     * the vehicle is still on its way, and the horizontal bound holds on every tick of
+     * it - that bound is the envelope this plant exists to keep.
+     */
     @Test
     void followsPositionTargetAtBoundedHorizontalSpeed() {
         VirtualDroneState drone = new VirtualDroneState(54, 1, "minecraft_drone_01");
@@ -248,21 +258,50 @@ class VirtualDroneStateTest {
         }
 
         assertTrue(drone.setPositionTarget(2.0, 1.0, -1.0));
+        double maxSpeed = VehicleModel.DEFAULTS.maxHorizontalSpeedMps();
         drone.tick();
         VirtualDroneSnapshot moving = drone.snapshot();
-        assertTrue(Math.hypot(moving.northM(), moving.eastM()) > 0.0);
-        assertEquals(1.4, Math.hypot(moving.velocityNorthMps(), moving.velocityEastMps()), 0.0001);
+        double firstSpeed = Math.hypot(moving.velocityNorthMps(), moving.velocityEastMps());
+        assertTrue(Math.hypot(moving.northM(), moving.eastM()) > 0.0, "the target did not move it");
+        assertTrue(firstSpeed > 0.0, "the vehicle did not start moving");
+        // One tick of the response to the 1.4 m/s the controller asked for, and not the
+        // whole of it: (target - current) * tick / response, with current at rest.
+        assertTrue(
+            firstSpeed <= maxSpeed * TICK_SECONDS / responseSeconds(),
+            "the airframe reached the commanded speed in a single tick");
         assertEquals(0.0, moving.velocityDownMps(), 0.0001);
 
-        for (int tick = 0; tick < 40; tick++) {
+        double distanceBefore = Math.hypot(2.0 - moving.northM(), 1.0 - moving.eastM());
+        boolean settled = false;
+        for (int tick = 1; tick <= 80 && !settled; tick++) {
             drone.tick();
+            VirtualDroneSnapshot snapshot = drone.snapshot();
+            double speed = Math.hypot(snapshot.velocityNorthMps(), snapshot.velocityEastMps());
+            assertTrue(
+                speed <= maxSpeed + 1.0e-9,
+                "horizontal speed left the virtual plant envelope on tick " + tick + ": " + speed);
+            double distance = Math.hypot(2.0 - snapshot.northM(), 1.0 - snapshot.eastM());
+            if (distance > 0.1) {
+                assertTrue(distance < distanceBefore, "the vehicle wandered on its way to the target");
+            }
+            distanceBefore = distance;
+            // Settled is "on the target and slow enough to stay on it": the plant calls
+            // a centimetre arrival, so a speed inside that per tick is a stop.
+            settled = distance <= 0.01 && speed <= 0.01;
         }
+        assertTrue(settled, "the vehicle never settled on its target");
+
         VirtualDroneSnapshot reached = drone.snapshot();
         assertEquals(2.0, reached.northM(), 0.0001);
         assertEquals(1.0, reached.eastM(), 0.0001);
         assertEquals(-1.0, reached.downM(), 0.0001);
-        assertEquals(0.0, reached.velocityNorthMps(), 0.0001);
-        assertEquals(0.0, reached.velocityEastMps(), 0.0001);
+
+        // Nothing is driving it any more, so it stays there instead of creeping off.
+        for (int tick = 0; tick < 10; tick++) {
+            drone.tick();
+        }
+        assertEquals(2.0, drone.snapshot().northM(), 0.0001);
+        assertEquals(1.0, drone.snapshot().eastM(), 0.0001);
     }
 
     @Test
@@ -286,48 +325,117 @@ class VirtualDroneStateTest {
         assertEquals(0.0, drone.snapshot().downM(), 0.0001);
     }
 
+    /**
+     * A commanded velocity with no position to track is approached through the
+     * airframe's response rather than applied in one tick: the speed builds up over the
+     * response time, it never passes the command, and the position is exactly the
+     * integral of the speed the telemetry reported - not one second at the full
+     * command, which is what an instant plant would have delivered.
+     */
     @Test
     void followsACommandedVelocityWhenNoPositionIsGiven() {
         VirtualDroneState drone = airborne();
-        assertTrue(drone.setLocalSetpoint(velocityOnly(0.5, 0.0, 0.0)));
+        double commanded = 0.5;
+        assertTrue(drone.setLocalSetpoint(velocityOnly(commanded, 0.0, 0.0)));
 
-        for (int tick = 0; tick < 20; tick++) {
+        double previous = 0.0;
+        double travelled = 0.0;
+        double perTickLimit = thrustAccelerationMps2() * TICK_SECONDS;
+        for (int tick = 1; tick <= 40; tick++) {
             drone.tick();
+            VirtualDroneSnapshot snapshot = drone.snapshot();
+            double speed = snapshot.velocityNorthMps();
+            assertTrue(speed >= previous, "the response has to approach the command monotonically");
+            assertTrue(speed <= commanded, "the response must not overshoot the command");
+            assertTrue(speed - previous <= perTickLimit, "a tick beat the airframe acceleration limit");
+            previous = speed;
+            travelled += speed * TICK_SECONDS;
         }
 
-        VirtualDroneSnapshot snapshot = drone.snapshot();
-        assertEquals(0.5, snapshot.velocityNorthMps(), 0.0001);
-        assertEquals(0.0, snapshot.velocityEastMps(), 0.0001);
-        // One second at 0.5 m/s, minus the ramp-up under the acceleration limit.
-        assertEquals(0.45, snapshot.northM(), 0.001);
+        VirtualDroneSnapshot flying = drone.snapshot();
+        // Two seconds is well past the response time, so the command is reached - inside
+        // one percent of it, because a first-order response gets close and then closer.
+        assertEquals(commanded, flying.velocityNorthMps(), commanded * 0.01);
+        assertEquals(0.0, flying.velocityEastMps(), 0.0001);
+        // The vehicle really moved, and by exactly what the ramp delivered.
+        assertEquals(travelled, flying.northM(), 1.0e-9);
+        assertTrue(flying.northM() > 0.5, "the velocity channel did not move the vehicle");
+        // An instant plant would have covered 0.5 m/s for the whole run.
+        assertTrue(flying.northM() < commanded * 40 * TICK_SECONDS, "the ramp was skipped");
     }
 
+    /**
+     * The same command at the top of the envelope. The ramp is the airframe's answer to
+     * a step demand: one tick buys one tick of the first-order response, no tick beats
+     * the acceleration the tilted thrust can produce, and two seconds in the vehicle is
+     * still climbing towards the command instead of sitting on it.
+     */
     @Test
     void rampsVelocityUnderTheAccelerationLimit() {
         VirtualDroneState drone = airborne();
-        assertTrue(drone.setLocalSetpoint(velocityOnly(1.4, 0.0, 0.0)));
+        double topSpeed = VehicleModel.DEFAULTS.maxHorizontalSpeedMps();
+        assertTrue(drone.setLocalSetpoint(velocityOnly(topSpeed, 0.0, 0.0)));
 
         drone.tick();
-        // 2.0 m/s^2 over one 50 ms tick.
-        assertEquals(0.1, drone.snapshot().velocityNorthMps(), 0.0001);
+        double firstSpeed = drone.snapshot().velocityNorthMps();
+        assertTrue(firstSpeed > 0.0, "the command was dropped");
+        assertTrue(
+            firstSpeed <= topSpeed * TICK_SECONDS / responseSeconds(),
+            "one tick closed the whole gap to the command");
 
-        drone.tick();
-        assertEquals(0.2, drone.snapshot().velocityNorthMps(), 0.0001);
+        double previous = firstSpeed;
+        double perTickLimit = thrustAccelerationMps2() * TICK_SECONDS;
+        for (int tick = 2; tick <= 40; tick++) {
+            drone.tick();
+            double speed = drone.snapshot().velocityNorthMps();
+            assertTrue(speed > previous, "the ramp stopped closing the gap");
+            assertTrue(speed <= topSpeed, "the ramp passed the command");
+            assertTrue(speed - previous <= perTickLimit, "a tick beat the airframe acceleration limit");
+            previous = speed;
+        }
+
+        // Two seconds of ramp against a 1.4 m/s command: real progress, and clearly not
+        // the instantaneous kinematics this plant used to have.
+        assertTrue(previous < topSpeed, "a step to top speed cannot arrive in two seconds");
+        assertTrue(previous > topSpeed * 0.6, "the ramp is slower than the airframe response");
     }
 
+    /**
+     * The acceleration channel is not dropped: it keeps adding speed, so the reported
+     * velocity climbs tick after tick. The airframe lags the request, so 150 ms of
+     * 1.0 m/s^2 has not delivered the whole 0.15 m/s yet - the velocity builds up
+     * instead of appearing.
+     */
     @Test
     void integratesACommandedAccelerationIntoTheVelocity() {
         VirtualDroneState drone = airborne();
+        double acceleration = 1.0;
         assertTrue(drone.setLocalSetpoint(new LocalSetpoint(
-            accelerationAxis(1.0), LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(),
+            accelerationAxis(acceleration), LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(),
             false, 0.0, false, 0.0)));
 
-        for (int tick = 0; tick < 3; tick++) {
+        double previous = 0.0;
+        for (int tick = 1; tick <= 3; tick++) {
+            drone.tick();
+            double speed = drone.snapshot().velocityNorthMps();
+            assertTrue(speed > previous, "the acceleration channel stopped integrating");
+            previous = speed;
+        }
+        // 1.0 m/s^2 for 150 ms is 0.15 m/s of velocity, and the airframe is still
+        // catching up to that ramp.
+        assertTrue(
+            previous < acceleration * 3 * TICK_SECONDS,
+            "the commanded acceleration was applied instantly");
+
+        // It keeps integrating for as long as the command stands.
+        for (int tick = 0; tick < 40; tick++) {
             drone.tick();
         }
-
-        // 1.0 m/s^2 for 150 ms.
-        assertEquals(0.15, drone.snapshot().velocityNorthMps(), 0.0001);
+        VirtualDroneSnapshot flying = drone.snapshot();
+        assertTrue(
+            flying.velocityNorthMps() > previous,
+            "the acceleration channel stopped driving the vehicle after three ticks");
+        assertTrue(flying.northM() > 0.0, "the velocity the channel produced did not move the vehicle");
     }
 
     @Test
@@ -350,6 +458,13 @@ class VirtualDroneStateTest {
         assertEquals(0.0, settled.yawRateRadS(), 0.0001);
     }
 
+    /**
+     * A later frame that only commands yaw replaces the setpoint, so the horizontal
+     * axes have no command any more. What the vehicle does then is coast: nothing is
+     * asking for speed, so the airframe takes the remaining speed off over its response
+     * time. It does not keep flying, and it does not stop dead either - it comes to
+     * rest within one response time's worth of travel of where the command left it.
+     */
     @Test
     void holdsTheAxesANewerFrameDoesNotCommand() {
         VirtualDroneState drone = airborne();
@@ -359,21 +474,37 @@ class VirtualDroneStateTest {
         }
         VirtualDroneSnapshot tracking = drone.snapshot();
         assertTrue(tracking.northM() > 0.0);
+        assertTrue(tracking.velocityNorthMps() > 0.0, "the north axis was not being tracked");
+        double northWhenYawWasCommanded = tracking.northM();
+        double speedWhenYawWasCommanded = tracking.velocityNorthMps();
 
-        // A later frame that only commands yaw replaces the setpoint, so the
-        // horizontal axes have no command any more and the vehicle holds them.
         assertTrue(drone.setLocalSetpoint(new LocalSetpoint(
             LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(),
             true, 0.3, false, 0.0)));
-        double northWhenYawWasCommanded = tracking.northM();
-        for (int tick = 0; tick < 10; tick++) {
+
+        // The coast: every tick is the previous one minus one tick's share of the
+        // response, so the speed falls monotonically to a stop.
+        double previous = speedWhenYawWasCommanded;
+        for (int tick = 1; tick <= 40; tick++) {
             drone.tick();
+            double speed = drone.snapshot().velocityNorthMps();
+            assertTrue(speed < previous, "the axis a newer frame did not command kept being driven");
+            previous = speed;
         }
 
         VirtualDroneSnapshot held = drone.snapshot();
-        assertEquals(northWhenYawWasCommanded, held.northM(), 0.0001);
-        assertEquals(0.0, held.velocityNorthMps(), 0.0001);
+        assertEquals(0.0, held.velocityNorthMps(), 0.001);
+        assertTrue(
+            held.northM() - northWhenYawWasCommanded <= speedWhenYawWasCommanded * responseSeconds(),
+            "the vehicle coasted further than its response time allows");
         assertEquals(0.3, held.yawRad(), 0.0001);
+
+        // Nothing drives it any more, so it stays where it came to rest.
+        double restingNorth = held.northM();
+        for (int tick = 0; tick < 10; tick++) {
+            drone.tick();
+        }
+        assertEquals(restingNorth, drone.snapshot().northM(), 0.0001);
     }
 
     @Test
@@ -384,6 +515,14 @@ class VirtualDroneStateTest {
             false, 0.0, false, 0.0)));
     }
 
+    /**
+     * The plant envelope is a hard bound, and it has to hold against the worst a PVA
+     * frame can ask for: a velocity channel is feed-forward onto the tracked speed and
+     * an acceleration channel is one tick ahead of it, so this frame demands more than
+     * five metres per second on each horizontal axis. The airframe response may lag and
+     * may cap what it can reach, but nothing a sender asks for may carry the vehicle
+     * past the envelope - the bound is checked on every tick, not just at the end.
+     */
     @Test
     void keepsTheVirtualPlantEnvelopeWhenVelocityAndAccelerationAreFedForward() {
         VirtualDroneState drone = airborne();
@@ -393,14 +532,33 @@ class VirtualDroneStateTest {
             LocalSetpoint.Axis.unset(),
             false, 0.0, false, 0.0)));
 
-        for (int tick = 0; tick < 20; tick++) {
+        double maxSpeed = VehicleModel.DEFAULTS.maxHorizontalSpeedMps();
+        for (int tick = 1; tick <= 20; tick++) {
             drone.tick();
             VirtualDroneSnapshot snapshot = drone.snapshot();
+            double speed = Math.hypot(snapshot.velocityNorthMps(), snapshot.velocityEastMps());
             assertTrue(
-                Math.hypot(snapshot.velocityNorthMps(), snapshot.velocityEastMps()) <= 1.400001,
-                "horizontal speed left the virtual plant envelope"
-            );
+                speed <= maxSpeed + 1.0e-9,
+                "horizontal speed left the virtual plant envelope on tick " + tick
+                    + ": " + speed + " m/s, limit " + maxSpeed);
         }
+    }
+
+    /** Seconds the airframe takes to answer a change of demand, from the vehicle model. */
+    private static double responseSeconds() {
+        return VehicleModel.DEFAULTS.motorTimeConstantS()
+            + VehicleModel.DEFAULTS.attitudeTimeConstantS();
+    }
+
+    /**
+     * The horizontal acceleration the tilted thrust can produce, in m/s^2.
+     *
+     * <p>Only the part of the thrust that can be pointed sideways accelerates the
+     * vehicle, so no tick of the response may beat this.
+     */
+    private static double thrustAccelerationMps2() {
+        return VehicleModel.DEFAULTS.maxThrustN() * Math.sin(VehicleModel.DEFAULTS.maxTiltRad())
+            / VehicleModel.DEFAULTS.massKg();
     }
 
     private static VirtualDroneState airborne() {

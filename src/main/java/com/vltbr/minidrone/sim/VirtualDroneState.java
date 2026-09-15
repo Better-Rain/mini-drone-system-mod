@@ -4,11 +4,14 @@ import com.vltbr.minidrone.mavlink.MavlinkProtocol;
 
 public final class VirtualDroneState {
     private static final double TICK_SECONDS = 0.05;
-    /** Top horizontal speed of the virtual plant, in metres per second. */
-    public static final double HORIZONTAL_SPEED_LIMIT_MPS = 1.4;
-    private static final double HORIZONTAL_SPEED_MPS = HORIZONTAL_SPEED_LIMIT_MPS;
-    private static final double CLIMB_RATE_MPS = 0.8;
-    private static final double DESCENT_RATE_MPS = 0.6;
+    /**
+     * Top horizontal speed of the default vehicle, in metres per second.
+     *
+     * <p>Kept as a constant because the health beacon's period has to stay inside the
+     * backend consistency window for it; the vehicle actually flies at whatever its
+     * {@link VehicleModel} says.
+     */
+    public static final double HORIZONTAL_SPEED_LIMIT_MPS = VehicleModel.DEFAULTS.maxHorizontalSpeedMps();
     // A disarmed multirotor has no thrust left, so it falls rather than holding
     // altitude. This is a plain free fall, not the full plant: it exists because
     // the backend only releases an emergency stop once the flight controller
@@ -16,14 +19,17 @@ public final class VirtualDroneState {
     // vehicle parked in the air can never satisfy that.
     private static final double FALL_GRAVITY_MPS2 = 9.81;
     private static final double FALL_TERMINAL_SPEED_MPS = 8.0;
-    private static final double HORIZONTAL_ACCELERATION_MPS2 = 2.0;
-    private static final double VERTICAL_ACCELERATION_MPS2 = 1.0;
     private static final double MAX_YAW_RATE_RAD_S = 1.5;
     private static final double GROUND_EPSILON_M = 0.01;
     private static final double POSITION_EPSILON_M = 0.01;
     private static final double YAW_EPSILON_RAD = 0.001;
     private static final double MAX_HORIZONTAL_DISTANCE_M = 120.0;
-    private static final double MAX_TILT_RAD = Math.toRadians(12.0);
+    /**
+     * The airframe being simulated: mass, thrust, drag, lag, limits. Every number the
+     * motion depends on comes from here, so tuning the vehicle does not mean editing
+     * constants.
+     */
+    private VehicleModel vehicleModel = VehicleModel.DEFAULTS;
     private static final double ATTITUDE_RESPONSE = 0.3;
     private static final int AXIS_COUNT = 3;
 
@@ -99,7 +105,7 @@ public final class VirtualDroneState {
         }
 
         if (flightPhase == FlightPhase.TAKING_OFF) {
-            velocityDownMps = -CLIMB_RATE_MPS;
+            velocityDownMps = -vehicleModel.climbRateMps();
             double altitudeTarget = position.value(AXIS_DOWN);
             downM = Math.max(altitudeTarget, downM + velocityDownMps * TICK_SECONDS);
             if (downM <= altitudeTarget + GROUND_EPSILON_M) {
@@ -108,7 +114,7 @@ public final class VirtualDroneState {
                 flightPhase = FlightPhase.FLYING;
             }
         } else if (flightPhase == FlightPhase.LANDING) {
-            velocityDownMps = DESCENT_RATE_MPS;
+            velocityDownMps = vehicleModel.descentRateMps();
             downM = Math.min(0.0, downM + velocityDownMps * TICK_SECONDS);
             if (downM >= -GROUND_EPSILON_M) {
                 downM = 0.0;
@@ -442,14 +448,14 @@ public final class VirtualDroneState {
             double deltaEast = position.value(AXIS_EAST) - eastM;
             double distance = Math.hypot(deltaNorth, deltaEast);
             if (distance > POSITION_EPSILON_M) {
-                double step = Math.min(HORIZONTAL_SPEED_MPS * TICK_SECONDS, distance);
+                double step = Math.min(vehicleModel.maxHorizontalSpeedMps() * TICK_SECONDS, distance);
                 trackingNorth = deltaNorth / distance * step / TICK_SECONDS;
                 trackingEast = deltaEast / distance * step / TICK_SECONDS;
             }
         } else if (trackedNorth) {
-            trackingNorth = trackScalar(northM, position.value(AXIS_NORTH), HORIZONTAL_SPEED_MPS);
+            trackingNorth = trackScalar(northM, position.value(AXIS_NORTH), vehicleModel.maxHorizontalSpeedMps());
         } else if (trackedEast) {
-            trackingEast = trackScalar(eastM, position.value(AXIS_EAST), HORIZONTAL_SPEED_MPS);
+            trackingEast = trackScalar(eastM, position.value(AXIS_EAST), vehicleModel.maxHorizontalSpeedMps());
         }
 
         double trackingDown = 0.0;
@@ -457,7 +463,7 @@ public final class VirtualDroneState {
             trackingDown = trackScalar(
                 downM,
                 position.value(AXIS_DOWN),
-                downM < position.value(AXIS_DOWN) ? CLIMB_RATE_MPS : DESCENT_RATE_MPS
+                downM < position.value(AXIS_DOWN) ? vehicleModel.climbRateMps() : vehicleModel.descentRateMps()
             );
         }
 
@@ -467,15 +473,69 @@ public final class VirtualDroneState {
             demand(AXIS_DOWN, trackingDown)
         };
         boundToPlantEnvelope(demand);
+        applyAirframeResponse(demand);
 
-        velocityNorthMps = demand[AXIS_NORTH];
-        velocityEastMps = demand[AXIS_EAST];
-        velocityDownMps = demand[AXIS_DOWN];
+        velocityNorthMps = actuatedVelocityMps[AXIS_NORTH];
+        velocityEastMps = actuatedVelocityMps[AXIS_EAST];
+        velocityDownMps = actuatedVelocityMps[AXIS_DOWN];
         northM += velocityNorthMps * TICK_SECONDS;
         eastM += velocityEastMps * TICK_SECONDS;
         downM += velocityDownMps * TICK_SECONDS;
-        System.arraycopy(demand, 0, actuatedVelocityMps, 0, AXIS_COUNT);
         snapOnArrival();
+    }
+
+    /**
+     * The airframe's answer to what the controller asked for.
+     *
+     * <p>Two physical facts turn a request into a motion:
+     *
+     * <ul>
+     *   <li>only the thrust that can be pointed sideways accelerates the vehicle, so
+     *       how fast it can change speed follows from thrust, lean limit and mass;</li>
+     *   <li>drag grows with the square of the speed, so it caps how fast the vehicle
+     *       can travel at all - the speed the flight controller may ask for limits the
+     *       request, not the world.</li>
+     * </ul>
+     *
+     * <p>Motors take time to change thrust, so the response is first order rather than
+     * instant: a step command builds up over a few tenths of a second the way a real
+     * quadcopter does, instead of jumping there in one tick.
+     */
+    private void applyAirframeResponse(double[] demand) {
+        double mass = vehicleModel.massKg();
+        double thrustAccel = vehicleModel.maxThrustN() * Math.sin(vehicleModel.maxTiltRad()) / mass;
+        double climbAccel = Math.max(0.0, vehicleModel.maxThrustN() / mass - VehicleModel.GRAVITY_MPS2);
+        double responseS = Math.max(
+            TICK_SECONDS,
+            vehicleModel.motorTimeConstantS() + vehicleModel.attitudeTimeConstantS());
+        double dragTerminal = vehicleModel.topSpeedMps();
+
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            double current = actuatedVelocityMps[axis];
+            double target = demand[axis];
+            double accelLimit;
+            if (axis == AXIS_DOWN) {
+                // Falling is gravity; climbing is what thrust is left over after
+                // holding the vehicle up.
+                accelLimit = target < current ? VehicleModel.GRAVITY_MPS2 : climbAccel;
+            } else {
+                target = Math.max(-dragTerminal, Math.min(dragTerminal, target));
+                accelLimit = thrustAccel;
+            }
+            double requested = (target - current) * TICK_SECONDS / responseS;
+            actuatedVelocityMps[axis] = current + clamp(requested, accelLimit * TICK_SECONDS);
+        }
+    }
+
+    /** The airframe this plant is flying. */
+    public VehicleModel vehicleModel() {
+        return vehicleModel;
+    }
+
+    public void setVehicleModel(VehicleModel model) {
+        if (model != null) {
+            vehicleModel = model;
+        }
     }
 
     private double demand(int axis, double tracking) {
@@ -495,9 +555,24 @@ public final class VirtualDroneState {
             return 0.0;
         }
         double target = velocity.active(axis) ? feedForward : actuatedVelocityMps[axis] + feedForward;
-        double limit = (axis == AXIS_DOWN ? VERTICAL_ACCELERATION_MPS2 : HORIZONTAL_ACCELERATION_MPS2)
+        // The rate a channel may change at is the airframe's, not a separate constant:
+        // limiting it twice - once here and once in the airframe response - made a
+        // velocity command crawl to its speed over seconds instead of the fraction of a
+        // second the motors actually take.
+        double limit = (axis == AXIS_DOWN ? verticalAccelLimitMps2() : horizontalAccelLimitMps2())
             * TICK_SECONDS;
         return actuatedVelocityMps[axis] + clamp(target - actuatedVelocityMps[axis], limit);
+    }
+
+    /** How fast the motors can change horizontal speed, m/s^2. */
+    private double horizontalAccelLimitMps2() {
+        return vehicleModel.maxThrustN() * Math.sin(vehicleModel.maxTiltRad()) / vehicleModel.massKg();
+    }
+
+    /** Climbing is what thrust is left over after holding the vehicle up. */
+    private double verticalAccelLimitMps2() {
+        return Math.max(0.0, vehicleModel.maxThrustN() / vehicleModel.massKg()
+            - VehicleModel.GRAVITY_MPS2);
     }
 
     private static double trackScalar(double current, double target, double rateMps) {
@@ -505,16 +580,16 @@ public final class VirtualDroneState {
         return Math.abs(delta) > POSITION_EPSILON_M ? Math.copySign(rateMps, delta) : 0.0;
     }
 
-    private static void boundToPlantEnvelope(double[] demand) {
+    private void boundToPlantEnvelope(double[] demand) {
         double horizontal = Math.hypot(demand[AXIS_NORTH], demand[AXIS_EAST]);
-        if (horizontal > HORIZONTAL_SPEED_MPS) {
-            double scale = HORIZONTAL_SPEED_MPS / horizontal;
+        if (horizontal > vehicleModel.maxHorizontalSpeedMps()) {
+            double scale = vehicleModel.maxHorizontalSpeedMps() / horizontal;
             demand[AXIS_NORTH] *= scale;
             demand[AXIS_EAST] *= scale;
         }
         demand[AXIS_DOWN] = demand[AXIS_DOWN] > 0.0
-            ? Math.min(demand[AXIS_DOWN], DESCENT_RATE_MPS)
-            : Math.max(demand[AXIS_DOWN], -CLIMB_RATE_MPS);
+            ? Math.min(demand[AXIS_DOWN], vehicleModel.descentRateMps())
+            : Math.max(demand[AXIS_DOWN], -vehicleModel.climbRateMps());
     }
 
     private void snapOnArrival() {
@@ -566,8 +641,8 @@ public final class VirtualDroneState {
         double sinYaw = Math.sin(yawRad);
         double bodyForward = velocityNorthMps * cosYaw + velocityEastMps * sinYaw;
         double bodyRight = -velocityNorthMps * sinYaw + velocityEastMps * cosYaw;
-        double desiredPitch = -MAX_TILT_RAD * bodyForward / HORIZONTAL_SPEED_MPS;
-        double desiredRoll = MAX_TILT_RAD * bodyRight / HORIZONTAL_SPEED_MPS;
+        double desiredPitch = -vehicleModel.maxTiltRad() * bodyForward / vehicleModel.maxHorizontalSpeedMps();
+        double desiredRoll = vehicleModel.maxTiltRad() * bodyRight / vehicleModel.maxHorizontalSpeedMps();
         double previousRoll = rollRad;
         double previousPitch = pitchRad;
         rollRad += (desiredRoll - rollRad) * ATTITUDE_RESPONSE;

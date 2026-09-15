@@ -61,14 +61,22 @@ public final class VirtualSystemSelfTest {
                 snapshot.velocityNorthMps(), snapshot.velocityEastMps()));
         }
         VirtualDroneSnapshot reached = drone.snapshot();
-        require(maxObservedSpeed <= 1.400001, "horizontal speed exceeded 1.4 m/s");
+        require(
+            maxObservedSpeed <= VehicleModel.DEFAULTS.maxHorizontalSpeedMps() + 1.0e-6,
+            "horizontal speed exceeded the vehicle's top speed");
+        // ... and the leg was flown at that speed, not crawled along well below it.
+        require(
+            maxObservedSpeed >= VehicleModel.DEFAULTS.maxHorizontalSpeedMps() * 0.95,
+            "the waypoint was approached far below the vehicle's speed");
         near(reached.northM(), 2.0, 0.0001, "waypoint north");
         near(reached.eastM(), 1.0, 0.0001, "waypoint east");
         near(reached.downM(), -1.0, 0.0001, "waypoint altitude");
     }
 
     // The backend's PVA setpoints reach the flight model as commanded channels, so
-    // the check has to prove a non-position channel actually drives the vehicle.
+    // the check has to prove a non-position channel actually drives the vehicle. The
+    // airframe builds a commanded speed over its response time rather than jumping to
+    // it, so the check waits for the response to land instead of sampling a fixed tick.
     private static void pvaVelocityChannel() {
         VirtualDroneState drone = airborne();
         require(
@@ -76,10 +84,16 @@ public final class VirtualSystemSelfTest {
                 velocityAxis(0.5), LocalSetpoint.Axis.unset(), LocalSetpoint.Axis.unset(),
                 false, 0.0, false, 0.0)),
             "velocity-only setpoint was rejected");
-        tick(drone, 20);
+        double commanded = 0.5;
+        double speed = 0.0;
+        for (int tick = 0; tick < 60 && Math.abs(speed - commanded) > commanded * 0.01; tick++) {
+            drone.tick();
+            speed = drone.snapshot().velocityNorthMps();
+            require(speed <= commanded, "the velocity response overshot the command");
+        }
         VirtualDroneSnapshot snapshot = drone.snapshot();
-        near(snapshot.velocityNorthMps(), 0.5, 0.0001, "commanded velocity");
-        require(snapshot.northM() > 0.4, "velocity channel did not move the drone");
+        near(snapshot.velocityNorthMps(), commanded, commanded * 0.01, "commanded velocity");
+        require(snapshot.northM() > 0.35, "velocity channel did not move the drone");
     }
 
     private static void pvaYawChannel() {

@@ -23,6 +23,9 @@ public final class VirtualDroneManager implements VirtualFlightController {
     public VirtualDroneManager(MinecraftServer server, TrainingFieldController fieldController) {
         this.server = server;
         worldController = new DroneWorldController(server, fieldController);
+        // The airframe can be described from the launcher as well as tuned in game;
+        // a malformed value leaves the default in place.
+        primaryDrone.setVehicleModel(VehicleModel.fromProperties(System.getProperties()));
         publish();
     }
 

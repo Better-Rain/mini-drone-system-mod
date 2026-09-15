@@ -1,6 +1,7 @@
 package com.vltbr.minidrone.mavlink;
 
 import com.vltbr.minidrone.sim.LocalSetpoint;
+import com.vltbr.minidrone.sim.VehicleModel;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
 import com.vltbr.minidrone.sim.VirtualDroneState;
 import com.vltbr.minidrone.sim.VirtualFlightController;
@@ -147,10 +148,24 @@ class VirtualAutopilotInboundTest {
         rig.deliver(POSITION_ONLY, 2.0, 1.0, -1.0, 0, 0, 0, 0);
         rig.tick(1);
 
+        // One tick of the airframe response: the setpoint arrived, the vehicle started
+        // towards it, and the speed is inside the envelope - but the airframe has not
+        // built the flight controller's 1.4 m/s in a single 50 ms tick.
         VirtualDroneSnapshot moving = rig.snapshot();
-        assertEquals(1.4, Math.hypot(moving.velocityNorthMps(), moving.velocityEastMps()), 1e-4);
+        double speed = Math.hypot(moving.velocityNorthMps(), moving.velocityEastMps());
+        assertTrue(speed > 0.0, "the setpoint did not start the vehicle moving");
+        assertTrue(
+            speed < VehicleModel.DEFAULTS.maxHorizontalSpeedMps(),
+            "the airframe reached the commanded speed in one tick");
         assertTrue(moving.northM() > 0.0);
         assertTrue(moving.eastM() > 0.0);
+
+        // The response catches up with the command, so the vehicle gets to the point.
+        rig.tick(60);
+        VirtualDroneSnapshot arrived = rig.snapshot();
+        assertEquals(2.0, arrived.northM(), 0.01);
+        assertEquals(1.0, arrived.eastM(), 0.01);
+        assertEquals(-1.0, arrived.downM(), 0.01);
     }
 
     @Test
@@ -175,11 +190,20 @@ class VirtualAutopilotInboundTest {
     void appliesAVelocityOnlySetpoint() {
         Rig rig = new Rig();
         rig.deliver(VELOCITY_ONLY, 0, 0, 0, 0.5, 0.0, 0.0, 0.0);
-        rig.tick(20);
 
+        // The command is not a teleport: the airframe builds the speed over its
+        // response time, so one tick in the vehicle is moving well short of 0.5 m/s.
+        rig.tick(1);
+        double firstSpeed = rig.snapshot().velocityNorthMps();
+        assertTrue(firstSpeed > 0.0, "the velocity channel did not start the vehicle moving");
+        assertTrue(firstSpeed < 0.5, "the airframe reached the commanded speed in one tick");
+
+        // Two seconds is past the response time, so the command is reached, and the
+        // vehicle has covered the ground that speed buys it - minus the ramp.
+        rig.tick(39);
         VirtualDroneSnapshot flying = rig.snapshot();
-        assertEquals(0.5, flying.velocityNorthMps(), 1e-4);
-        assertTrue(flying.northM() > 0.3, "the velocity channel did not move the drone");
+        assertEquals(0.5, flying.velocityNorthMps(), 0.005);
+        assertTrue(flying.northM() > 0.5, "the velocity channel did not move the drone");
     }
 
     @Test
