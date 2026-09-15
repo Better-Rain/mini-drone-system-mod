@@ -6,15 +6,19 @@ import com.vltbr.minidrone.mavlink.MocapFieldMetadata;
 import com.vltbr.minidrone.entity.ModEntityTypes;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualSystemSelfTest;
+import com.vltbr.minidrone.world.ArenaOrigin;
 import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.TrainingArenaController;
 import com.vltbr.minidrone.world.TrainingArenaLayout;
+import com.vltbr.minidrone.world.TrainingFieldController;
+import com.vltbr.minidrone.world.TrainingFieldDefinition;
 import com.vltbr.minidrone.world.VirtualMocapSettingsSavedData;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.core.BlockPos;
 import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ClickEvent;
@@ -34,6 +38,7 @@ public final class MiniDroneMod implements ModInitializer {
 
     private VirtualDroneManager droneManager;
     private TrainingArenaController trainingArenaController;
+    private TrainingFieldController trainingFieldController;
     private VirtualMocapSettingsSavedData mocapSettings;
     private MavlinkTransport mavlinkTransport;
 
@@ -64,12 +69,56 @@ public final class MiniDroneMod implements ModInitializer {
                                     BlockPosArgument.getBlockPos(context, "center")))))
                         .then(literal("status").executes(context -> reportArenaStatus(context.getSource())))
                         .then(literal("clear").executes(context -> clearArena(context.getSource()))))
+                    .then(literal("field")
+                        .then(literal("status").executes(context -> reportFieldStatus(context.getSource())))
+                        .then(literal("clear").executes(context -> clearField(context.getSource())))
+                        .then(literal("set")
+                            .then(literal("corners")
+                                .then(net.minecraft.commands.Commands.argument(
+                                    "first", BlockPosArgument.blockPos())
+                                    .then(net.minecraft.commands.Commands.argument(
+                                        "second", BlockPosArgument.blockPos())
+                                        .executes(context -> setFieldCorners(
+                                            context.getSource(),
+                                            BlockPosArgument.getBlockPos(context, "first"),
+                                            BlockPosArgument.getBlockPos(context, "second"))))))
+                            .then(literal("center")
+                                .then(net.minecraft.commands.Commands.argument(
+                                    "center", BlockPosArgument.blockPos())
+                                    .then(net.minecraft.commands.Commands.argument(
+                                        "width", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 256))
+                                        .then(net.minecraft.commands.Commands.argument(
+                                            "depth", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 256))
+                                            .executes(context -> setFieldCenter(
+                                                context.getSource(),
+                                                BlockPosArgument.getBlockPos(context, "center"),
+                                                com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(
+                                                    context, "width"),
+                                                com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(
+                                                    context, "depth"))))))))
+                        .then(literal("origin")
+                            .then(literal("center").executes(context ->
+                                setFieldOrigin(context.getSource(), TrainingFieldDefinition.OriginMode.CENTRE, 0.0, 0.0)))
+                            .then(literal("corner").executes(context ->
+                                setFieldOrigin(context.getSource(), TrainingFieldDefinition.OriginMode.CORNER, 0.0, 0.0)))
+                            .then(literal("at")
+                                .then(net.minecraft.commands.Commands.argument(
+                                    "point", BlockPosArgument.blockPos())
+                                    .executes(context -> {
+                                        var point = BlockPosArgument.getBlockPos(context, "point");
+                                        return setFieldOrigin(
+                                            context.getSource(),
+                                            TrainingFieldDefinition.OriginMode.EXPLICIT,
+                                            point.getX() + 0.5,
+                                            point.getZ() + 0.5);
+                                    })))))
             )
         );
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             trainingArenaController = new TrainingArenaController(server);
-            droneManager = new VirtualDroneManager(server, trainingArenaController);
+            trainingFieldController = new TrainingFieldController(server, trainingArenaController);
+            droneManager = new VirtualDroneManager(server, trainingFieldController);
             mocapSettings = server.overworld().getDataStorage().computeIfAbsent(
                 VirtualMocapSettingsSavedData.factory(),
                 VirtualMocapSettingsSavedData.DATA_ID
@@ -99,6 +148,7 @@ public final class MiniDroneMod implements ModInitializer {
             }
             droneManager = null;
             trainingArenaController = null;
+            trainingFieldController = null;
             mocapSettings = null;
             LOGGER.info("Mini Drone System virtual flight controller stopped");
         });
@@ -124,26 +174,144 @@ public final class MiniDroneMod implements ModInitializer {
         if (mavlinkTransport == null) {
             return;
         }
-        if (trainingArenaController == null || !trainingArenaController.hasArena()) {
+        var field = trainingFieldController == null ? null : trainingFieldController.definition();
+        if (field == null) {
             mavlinkTransport.setFieldMetadata(null);
             return;
         }
-        var info = trainingArenaController.info();
+        double[] offset = field.centerOffsetM();
         mavlinkTransport.setFieldMetadata(new MocapFieldMetadata(
-            info.widthM(),
-            info.depthM(),
-            true,
+            field.widthM(),
+            field.depthM(),
+            field.isCentred(),
             MocapFieldMetadata.CURRENT_PROTOCOL_VERSION,
-            System.currentTimeMillis() * 1000L
+            System.currentTimeMillis() * 1000L,
+            offset[0],
+            offset[1]
         ));
         LOGGER.info(
-            "Advertising training field {}x{} m centred at the virtual origin ({}, {}, {})",
-            info.widthM(),
-            info.depthM(),
-            info.centerX(),
-            info.topY(),
-            info.centerZ()
+            "Advertising training field {}x{} m centred_at_origin={} center_offset=({}, {}) origin=({}, {}, {})",
+            field.widthM(),
+            field.depthM(),
+            field.isCentred(),
+            offset[0],
+            offset[1],
+            field.originX(),
+            field.topY() + ArenaOrigin.PAD_SURFACE_OFFSET_M,
+            field.originZ()
         );
+    }
+
+    private int reportFieldStatus(CommandSourceStack source) {
+        if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        source.sendSuccess(() -> copyableMessage(trainingFieldController.describe()), false);
+        return trainingFieldController.hasField() ? 1 : 0;
+    }
+
+    /**
+     * Defines the field by two opposite corners. The lower of the two Y values
+     * becomes the surface layer, so a corner placed on the ground and one placed on
+     * the wall still describe the floor the drone lands on.
+     */
+    private int setFieldCorners(CommandSourceStack source, BlockPos first, BlockPos second) {
+        if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        if (first.getY() != second.getY() && Math.abs(first.getY() - second.getY()) > 2) {
+            source.sendFailure(Component.literal(
+                "The two corners are more than 2 blocks apart in Y; a field is one flat layer."));
+            return 0;
+        }
+        try {
+            var field = trainingFieldController.defineFromCorners(first, second);
+            applyFieldChange(source);
+            source.sendSuccess(() -> copyableMessage(
+                "Training field set from corners: " + field.describe()), false);
+            return 1;
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal("Cannot define that field: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private int setFieldCenter(CommandSourceStack source, BlockPos center, int widthM, int depthM) {
+        if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        try {
+            var field = trainingFieldController.defineFromCentreAndSize(center, widthM, depthM);
+            applyFieldChange(source);
+            source.sendSuccess(() -> copyableMessage(
+                String.format(
+                    "Training field set to %d x %d m around (%d, %d, %d): %s",
+                    widthM, depthM, center.getX(), center.getY(), center.getZ(), field.describe())),
+                false);
+            return 1;
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal("Cannot define that field: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private int setFieldOrigin(
+        CommandSourceStack source,
+        TrainingFieldDefinition.OriginMode mode,
+        double explicitX,
+        double explicitZ
+    ) {
+        if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        var updated = trainingFieldController.setOrigin(mode, explicitX, explicitZ);
+        if (updated == null) {
+            source.sendFailure(Component.literal(
+                "No training field is defined yet; set one first (see /minidrone field status)."));
+            return 0;
+        }
+        applyFieldChange(source);
+        source.sendSuccess(() -> copyableMessage(
+            "Training field origin set: " + trainingFieldController.summary()
+                + " (LOCAL_POSITION_NED (0,0,0) moved; the field itself did not)"), false);
+        return 1;
+    }
+
+    private int clearField(CommandSourceStack source) {
+        if (trainingFieldController == null) {
+            source.sendFailure(Component.literal("Mini Drone System is not running in a world."));
+            return 0;
+        }
+        if (!trainingFieldController.clearManual()) {
+            source.sendFailure(Component.literal("No hand-made training field is defined."));
+            return 0;
+        }
+        applyFieldChange(source);
+        source.sendSuccess(() -> copyableMessage(
+            "Hand-made training field cleared. " + trainingFieldController.describe()), false);
+        return 1;
+    }
+
+    /**
+     * Everything that changes the field has the same three consequences: the beacon
+     * advertises something new, the virtual origin moves, and the drone has to be
+     * re-placed so the pilot sees it where the new origin says it is.
+     */
+    private void applyFieldChange(CommandSourceStack source) {
+        publishFieldMetadata();
+        ServerPlayer player;
+        try {
+            player = source.getPlayerOrException();
+        } catch (Exception exception) {
+            return;
+        }
+        if (droneManager != null) {
+            droneManager.resetFlightOrigin(player);
+        }
     }
 
     private int reportStatus(CommandSourceStack source) {

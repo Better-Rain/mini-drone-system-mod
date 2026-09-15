@@ -290,9 +290,7 @@ world.z = -north
 
 **训练场就是虚拟世界坐标系的原点**：有训练场时，`LOCAL_POSITION_NED (0,0,0)` 是场地中心的降落垫面，无人机实体也生成在那里，模组同时把场地尺寸与"以原点为中心"通过健康信标告诉主项目——前端因此会自动把场地画成对应尺寸并让飞机落在场地中心。没有训练场时退回"玩家前方 2 格"的便利原点，并且**不上报**场地，前端保留它自己的场地。`arena create` / `arena clear` 会立刻切换原点规则并重新广播（或清空）场地元数据；细节见 `docs/main-backend-compatibility.md` §5.1–§5.2。
 
-**矩形训练场**：默认 13×13，两个轴可以独立配置（单位是方块，默认 6）：
-
-```text
+**矩形训练场**：默认 13×13，两个轴可以独立配置（单位是方块，默认 6）：```text
 -Dmini_drone.arena.radius_x=10 -Dmini_drone.arena.radius_z=4   # 建成 21x9 的跑道式场地
 ```
 
@@ -300,6 +298,37 @@ world.z = -north
 改动后先 `/minidrone arena clear` 再 `/minidrone arena create` 重建即可，`arena status` / `arena create`
 的回执都会打印实际尺寸，模组也按实际占地广播 `field_size_m`（矩形不需要扩协议，主项目本来就分开读宽/深）。
 场地中心（降落垫）始终是虚拟世界原点，所以"偏心场地"在虚拟源里不存在；只有真机 relay 才可能需要它。
+
+### 自己定义场地：`/minidrone field`
+
+训练场不必由模组生成。你可以用**自己的地面**（任何方块、任何形状），只用命令定义"场地范围"：
+
+```text
+/minidrone field status                       # 当前场地：尺寸、范围、中心、原点、广播了什么
+/minidrone field set corners <角1> <角2>       # 两个对角的方块坐标（Y 取两者中较低的那个）
+/minidrone field set center <中心> <宽> <深>    # 中心方块 + 尺寸（米）
+/minidrone field origin center                # 原点 = 场地中心（默认）
+/minidrone field origin corner                # 原点 = 最小角方块中心（真机房间习惯）
+/minidrone field origin at <方块坐标>          # 原点 = 任意方块中心
+/minidrone field clear                        # 删除手动定义（有训练场时会退回按训练场算）
+```
+
+`field status` 会一次说清：场地尺寸/边界/表面层 Y、几何中心、NED 原点在世界里的坐标、
+原点规则、以及**实际广播出去**的 `field_size_m` / `field_centered_at_world_origin` / `field_center_m`——
+"定义了但没有广播"这种状态因此一眼可见。
+
+优先级：**手动定义 > 模组生成的训练场 > 启动默认值**。所以 `arena clear` 清掉生成平台时，
+你手量手填的场地不会跟着消失；反过来 `/minidrone field clear` 之后会退回按训练场算。
+
+不想在游戏里敲命令时，也可以在启动参数里给实例一个默认场地（Y 省略就用场地中心处的地面高度）：
+
+```text
+-Dmini_drone.field.corners=x1,z1,x2,z2[,y]
+-Dmini_drone.field.center=x,z,宽,深[,y]
+```
+
+原点不在中心时（`origin corner` / `origin at`），模组会把偏移作为 `field_center_m` 一起广播，
+主项目据此把场地画在正确位置——这块两侧契约见 `docs/main-backend-compatibility.md` §5.1。
 
 `selftest` 不会改变当前世界中的无人机、场地或主项目连接。它在内存中运行 10 项闭环检查：GUIDED/ARM 门禁、起飞、限速航点、PVA 速度通道、PVA 偏航通道、降落后上锁（`armed=false`）、Local NED 重置、MAVLink 心跳编解码、坐标变换和训练场布局。训练场存档往返由世界加载/保存路径负责。开发阶段可直接运行 `\.\gradlew.bat closedLoopTest`，进入游戏后只需执行一次 `/minidrone selftest` 即可确认客户端加载了同一套逻辑。
 

@@ -16,17 +16,17 @@ public final class DroneWorldController implements AutoCloseable {
     private static final double HOME_HEIGHT_OFFSET = 0.1;
 
     private final MinecraftServer server;
-    private final TrainingArenaController arenaController;
+    private final TrainingFieldController fieldController;
     private DroneEntity entity;
     private NedWorldTransform transform;
 
     public DroneWorldController(MinecraftServer server) {
-        this(server, new TrainingArenaController(server));
+        this(server, new TrainingFieldController(server));
     }
 
-    public DroneWorldController(MinecraftServer server, TrainingArenaController arenaController) {
+    public DroneWorldController(MinecraftServer server, TrainingFieldController fieldController) {
         this.server = server;
-        this.arenaController = arenaController;
+        this.fieldController = fieldController;
     }
 
     public void tick(VirtualDroneSnapshot snapshot) {
@@ -39,29 +39,27 @@ public final class DroneWorldController implements AutoCloseable {
     }
 
     /**
-     * The virtual world origin: the centre of the training arena when one exists,
-     * otherwise two blocks in front of the player.
+     * The virtual world origin: the training field's origin when one is defined
+     * (hand-made, or the generated arena, or an instance default), otherwise two
+     * blocks in front of the player.
      *
-     * <p>The main project draws its field centred on the local NED origin, so an
-     * operator who built an arena expects {@code LOCAL_POSITION_NED (0, 0, 0)} to
-     * be that arena's landing pad. When the arena exists the mod therefore puts the
-     * origin on the pad (block centre in X/Z, one block above the surface layer,
-     * which is where a resting drone sits) and tells the backend about it in the
-     * health beacon. Without an arena there is nothing to be centred on and the
-     * origin stays a convenience for free flight.
+     * <p>The main project has to know where that origin is relative to the field,
+     * which is exactly what the field definition carries: {@code field_size_m} and,
+     * when the origin is not the centre, {@code field_center_m}. Without a field
+     * there is nothing to line up with and the origin stays a convenience for free
+     * flight.
      */
     private NedWorldTransform chooseOrigin(ServerPlayer player) {
-        TrainingArenaController.ArenaInfo arena = arenaController == null ? null : arenaController.info();
-        if (arena != null && arena.present()) {
-            return ArenaOrigin.centeredTransform(arena.centerX(), arena.topY(), arena.centerZ());
-        }
-        return transformInFrontOf(player);
+        NedWorldTransform origin = fieldController == null ? null : fieldController.originTransform();
+        return origin != null ? origin : transformInFrontOf(player);
     }
 
-    /** True when the origin currently comes from the arena rather than the player. */
-    public boolean originFollowsArena() {
-        TrainingArenaController.ArenaInfo arena = arenaController == null ? null : arenaController.info();
-        return arena != null && arena.present();
+    /** Which rule produced the current origin, for the log line. */
+    public String originRule() {
+        if (fieldController == null || !fieldController.hasField()) {
+            return "in front of the player (no field defined)";
+        }
+        return fieldController.summary();
     }
 
     private void spawnForFirstPlayer(VirtualDroneSnapshot snapshot) {
@@ -123,7 +121,7 @@ public final class DroneWorldController implements AutoCloseable {
             String.format(Locale.ROOT, "%.2f", transform.originX()),
             String.format(Locale.ROOT, "%.2f", transform.originY()),
             String.format(Locale.ROOT, "%.2f", transform.originZ()),
-            originFollowsArena() ? "training arena centre" : "in front of the player"
+            originRule()
         );
     }
 

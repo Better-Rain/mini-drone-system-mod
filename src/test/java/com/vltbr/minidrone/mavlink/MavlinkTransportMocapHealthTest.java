@@ -159,6 +159,40 @@ class MavlinkTransportMocapHealthTest {
         assertTrue(payload.contains("\"field_centered_at_world_origin\":true,"), payload);
         assertTrue(payload.contains("\"field_protocol_version\":1,"), payload);
         assertTrue(payload.contains("\"field_update_wall_time_unix_us\":1787600000000000,"), payload);
+        // A centred field states the offset explicitly as zero, so the monitoring
+        // side never has to guess whether an absent value means "centred".
+        assertTrue(payload.contains("\"field_center_m\":[0.000,0.000],"), payload);
+    }
+
+    /**
+     * When the origin is not the field centre - the real-room convention, or an
+     * operator who picked a corner - the beacon has to say where the field is, or
+     * the monitoring side draws the ground around the origin and the vehicle's
+     * position relative to it is wrong.
+     */
+    @Test
+    void advertisesTheFieldCentreOffsetWhenTheOriginIsNotTheCentre() {
+        MocapFieldMetadata field = new MocapFieldMetadata(
+            21, 9, false, MocapFieldMetadata.CURRENT_PROTOCOL_VERSION, 0L, 10.0, 4.0);
+
+        String payload = MavlinkTransport.mocapHealthPayload(
+            snapshot(), 0L, "minecraft_drone_01", new ForwardingHold(), field);
+
+        assertTrue(payload.contains("\"field_size_m\":[21.000,9.000],"), payload);
+        assertTrue(payload.contains("\"field_centered_at_world_origin\":false,"), payload);
+        assertTrue(payload.contains("\"field_center_m\":[10.000,4.000],"), payload);
+    }
+
+    /** A field cannot claim to be centred and carry an offset at the same time. */
+    @Test
+    void rejectsAContradictoryFieldCentre() {
+        assertThrows(IllegalArgumentException.class, () -> new MocapFieldMetadata(
+            13, 13, true, MocapFieldMetadata.CURRENT_PROTOCOL_VERSION, 0L, 1.0, 0.0));
+        assertThrows(IllegalArgumentException.class, () -> new MocapFieldMetadata(
+            13, 13, false, MocapFieldMetadata.CURRENT_PROTOCOL_VERSION, 0L, Double.NaN, 0.0));
+        assertFalse(new MocapFieldMetadata(
+            13, 13, false, MocapFieldMetadata.CURRENT_PROTOCOL_VERSION, 0L, 0.0, 0.0)
+            .hasCenterOffset());
     }
 
     @Test

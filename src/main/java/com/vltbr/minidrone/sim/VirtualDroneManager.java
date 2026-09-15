@@ -2,7 +2,7 @@ package com.vltbr.minidrone.sim;
 
 import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.NedWorldTransform;
-import com.vltbr.minidrone.world.TrainingArenaController;
+import com.vltbr.minidrone.world.TrainingFieldController;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
@@ -15,12 +15,12 @@ public final class VirtualDroneManager implements VirtualFlightController {
     private final DroneWorldController worldController;
 
     public VirtualDroneManager(MinecraftServer server) {
-        this(server, new TrainingArenaController(server));
+        this(server, new TrainingFieldController(server));
     }
 
-    public VirtualDroneManager(MinecraftServer server, TrainingArenaController arenaController) {
+    public VirtualDroneManager(MinecraftServer server, TrainingFieldController fieldController) {
         this.server = server;
-        worldController = new DroneWorldController(server, arenaController);
+        worldController = new DroneWorldController(server, fieldController);
         publish();
     }
 

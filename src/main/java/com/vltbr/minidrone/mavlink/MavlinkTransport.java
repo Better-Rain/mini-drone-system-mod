@@ -445,12 +445,15 @@ public final class MavlinkTransport {
                 "\"field_size_m\":[%.3f,%.3f],"
                     + "\"field_centered_at_world_origin\":%s,"
                     + "\"field_protocol_version\":%d,"
-                    + "\"field_update_wall_time_unix_us\":%d,",
+                    + "\"field_update_wall_time_unix_us\":%d,"
+                    + "\"field_center_m\":[%.3f,%.3f],",
                 field.widthM(),
                 field.depthM(),
                 field.centeredAtWorldOrigin(),
                 field.protocolVersion(),
-                field.updatedWallTimeUnixUs()
+                field.updatedWallTimeUnixUs(),
+                field.centerOffsetXM(),
+                field.centerOffsetZM()
             );
         return String.format(
             Locale.ROOT,

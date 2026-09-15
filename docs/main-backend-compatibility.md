@@ -268,10 +268,14 @@ backend 向 `127.0.0.1:18152` 发送 UDP 原始 ASCII 字节，不带 JSON。当
 
 | 字段 | 值 | 说明 |
 | --- | --- | --- |
-| `field_size_m` | `[13.0, 13.0]` | 场地宽 × 深（米），取**实际建成**的占地（`TrainingArenaLayout.widthM()/depthM()`，1 方块 = 1 米）。默认 13×13；`-Dmini_drone.arena.radius_x/radius_z`（单位方块，默认 6/6）可以建成矩形，例如 `radius_x=10, radius_z=4` → `[21.0, 9.0]` |
-| `field_centered_at_world_origin` | `true` | 场地中心**就是**虚拟世界原点。主项目只信这一种场地；为 `false` 时它会忽略整段 |
+| `field_size_m` | `[13.0, 13.0]` | 场地宽 × 深（米），取**实际建成/定义**的占地（1 方块 = 1 米）。默认 13×13；`-Dmini_drone.arena.radius_x/radius_z`（单位方块，默认 6/6）可以建成矩形，例如 `radius_x=10, radius_z=4` → `[21.0, 9.0]`；`/minidrone field set` 可以直接定义任意矩形 |
+| `field_centered_at_world_origin` | `true` | 场地中心**就是**虚拟世界原点。主项目只信这一种场地；为 `false` 时它会忽略整段（除非同时给出下面的偏移） |
+| `field_center_m` | `[0.0, 0.0]` | 场地中心相对原点的偏移（米），轴系与场景一致（x = −east、z = −north，即 Minecraft 的 X/Z 轴）。中心即原点时必须为 `[0,0]`，此时 `field_centered_at_world_origin=true`；原点被指定到角/任意点时给非零值并置 `false` |
 | `field_protocol_version` | `1` | 场地元数据契约版本（`MocapFieldMetadata.CURRENT_PROTOCOL_VERSION`） |
-| `field_update_wall_time_unix_us` | 创建/载入时间 | "这份场地定义是什么时候确立的"。场地变更或世界载入时刷新一次，其余时间保持不变（与 relay 的语义一致） |
+| `field_update_wall_time_unix_us` | 定义/载入时间 | "这份场地定义是什么时候确立的"。场地变更或世界载入时刷新一次，其余时间保持不变（与 relay 的语义一致） |
+
+`MocapFieldMetadata` 会拒绝"既声称以原点为中心、又给出非零偏移"这种自相矛盾的组合：主项目看到
+`centered_at_world_origin=true` 就按原点居中来画，两个字段打架时画出来的场地一定是错的。
 
 **矩形场地不需要扩协议**：`field_size_m` 本来就是 `[width, depth]` 两个独立值，主项目前端也分开用宽/深
 （`updateFieldDimensions(width, depth)`）。所以矩形只用两个 JVM 参数 + 重建场地即可。
