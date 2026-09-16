@@ -801,10 +801,16 @@ public final class MiniDroneMod implements ModInitializer {
             source.sendFailure(Component.literal("No recorded training arena exists in this world."));
             return 0;
         }
+        // Blocks and metres, side by side: the arena is built in blocks while everything the
+        // monitoring side sees is metres, and at a scale other than 1.0 printing one number
+        // labelled with the other unit is how a mismatch hides.
+        double scale = com.vltbr.minidrone.world.WorldScale.metresPerBlock();
         source.sendSuccess(() -> copyableMessage(String.format(
-            "Training arena center=(%d, %d, %d), size=%dx%d m, recorded_blocks=%d",
+            "Training arena center=(%d, %d, %d), size=%dx%d blocks = %.2fx%.2f m at %.4g m/block, recorded_blocks=%d",
             info.centerX(), info.topY(), info.centerZ(),
-            info.widthM(), info.depthM(), info.recordedBlocks())), false);
+            info.widthM(), info.depthM(),
+            info.widthM() * scale, info.depthM() * scale, scale,
+            info.recordedBlocks())), false);
         return 1;
     }
 
