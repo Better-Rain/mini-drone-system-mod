@@ -11,6 +11,34 @@ public final class NedWorldTransform {
         this.originX = originX;
         this.originY = originY;
         this.originZ = originZ;
+        this.metresPerBlock = 1.0;
+    }
+
+    /**
+     * Metres per block: how far one Minecraft block is said to be.
+     *
+     * <p>The simulation speaks SI - the vehicle model, the speed limits and the monitoring
+     * system are all in metres - while the world speaks blocks. This is the single place
+     * they meet: NED offsets are divided by the scale on the way out to the world, so at a
+     * scale of 0.25 the same 1.4 m/s flight covers four times as many blocks, and a
+     * 49-block arena reads as 12.25 m instead of 49 m. At 1.0 - the default, and what every
+     * existing setup uses - nothing changes.
+     */
+    private final double metresPerBlock;
+
+    public NedWorldTransform(
+        double originX, double originY, double originZ, double metresPerBlock
+    ) {
+        this.originX = originX;
+        this.originY = originY;
+        this.originZ = originZ;
+        this.metresPerBlock = metresPerBlock > 0.0 && Double.isFinite(metresPerBlock)
+            ? metresPerBlock
+            : 1.0;
+    }
+
+    public double metresPerBlock() {
+        return metresPerBlock;
     }
 
     public double originX() {
@@ -44,10 +72,15 @@ public final class NedWorldTransform {
         double pitchRad,
         double yawRad
     ) {
+        // Metres to blocks: the world is where the vehicle is actually simulated, so this
+        // is where the scale is applied.
+        double eastBlocks = eastM / metresPerBlock;
+        double downBlocks = downM / metresPerBlock;
+        double northBlocks = northM / metresPerBlock;
         return new WorldPose(
-            originX - eastM,
-            originY - downM,
-            originZ - northM,
+            originX - eastBlocks,
+            originY - downBlocks,
+            originZ - northBlocks,
             wrapDegrees(180.0 - Math.toDegrees(yawRad)),
             (float) -Math.toDegrees(pitchRad),
             (float) Math.toDegrees(rollRad)

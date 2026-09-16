@@ -17,6 +17,7 @@ import com.vltbr.minidrone.world.DroneWorldController;
 import com.vltbr.minidrone.world.TrainingArenaController;
 import com.vltbr.minidrone.world.TrainingArenaLayout;
 import com.vltbr.minidrone.world.TrainingFieldController;
+import com.vltbr.minidrone.world.WorldScale;
 import com.vltbr.minidrone.world.TrainingFieldDefinition;
 import com.vltbr.minidrone.world.VirtualMocapSettingsSavedData;
 import net.fabricmc.api.ModInitializer;
@@ -230,19 +231,26 @@ public final class MiniDroneMod implements ModInitializer {
             return;
         }
         double[] offset = field.centerOffsetM();
+        // Metres, not blocks: the monitoring side and every backend limit are in SI, and the
+        // scale is what turns a 49-block arena into the 12.25 m room it is meant to be.
+        double[] sizeM = field.sizeM();
+        double scale = WorldScale.metresPerBlock();
         mavlinkTransport.setFieldMetadata(new MocapFieldMetadata(
-            field.widthM(),
-            field.depthM(),
+            sizeM[0],
+            sizeM[1],
             field.isCentred(),
             MocapFieldMetadata.CURRENT_PROTOCOL_VERSION,
             System.currentTimeMillis() * 1000L,
-            offset[0],
-            offset[1]
+            offset[0] * scale,
+            offset[1] * scale
         ));
         LOGGER.info(
-            "Advertising training field {}x{} m centred_at_origin={} center_offset=({}, {}) origin=({}, {}, {})",
+            "Advertising training field {}x{} m ({},{} blocks, {} m/block) centred_at_origin={} center_offset=({}, {}) origin=({}, {}, {})",
+            sizeM[0],
+            sizeM[1],
             field.widthM(),
             field.depthM(),
+            scale,
             field.isCentred(),
             offset[0],
             offset[1],

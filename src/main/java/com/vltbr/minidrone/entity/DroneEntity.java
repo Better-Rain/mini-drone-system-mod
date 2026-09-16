@@ -106,6 +106,50 @@ public final class DroneEntity extends Entity {
         setNoGravity(true);
     }
 
+    /**
+     * Right-clicking the drone with the placement item picks it up.
+     *
+     * <p>So the item reads as "carry the drone": right-click the world to set it down
+     * somewhere, right-click the drone to bring it home. Before this the only way back was
+     * the {@code /minidrone drone reset} command, which is not what an operator reaches for
+     * after carrying the vehicle to the far side of the arena.
+     *
+     * <p>This lives on the entity rather than the item because the vehicle is a plain
+     * {@link Entity}, not a living one, so {@code Item.interactLivingEntity} never fires for
+     * it; the client sends the interaction to the entity itself.
+     */
+    @Override
+    public net.minecraft.world.InteractionResult interact(
+        net.minecraft.world.entity.player.Player player, net.minecraft.world.InteractionHand hand
+    ) {
+        if (!(player.getItemInHand(hand).getItem()
+            instanceof com.vltbr.minidrone.item.DronePlacementItem)) {
+            return net.minecraft.world.InteractionResult.PASS;
+        }
+        if (level().isClientSide()
+            || !(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) {
+            return net.minecraft.world.InteractionResult.SUCCESS;
+        }
+        com.vltbr.minidrone.sim.VirtualDroneManager.OriginResetResult result =
+            com.vltbr.minidrone.world.DronePlacementHook.collect(serverPlayer);
+        if (result == com.vltbr.minidrone.sim.VirtualDroneManager.OriginResetResult.DRONE_ACTIVE) {
+            player.displayClientMessage(
+                net.minecraft.network.chat.Component.literal(
+                    "Land and disarm the virtual drone before collecting it.")
+                    .withStyle(net.minecraft.ChatFormatting.RED),
+                false
+            );
+        } else if (result != com.vltbr.minidrone.sim.VirtualDroneManager.OriginResetResult.RESET) {
+            player.displayClientMessage(
+                net.minecraft.network.chat.Component.literal(
+                    "The virtual drone belongs to the training world; it cannot be collected here.")
+                    .withStyle(net.minecraft.ChatFormatting.RED),
+                false
+            );
+        }
+        return net.minecraft.world.InteractionResult.SUCCESS;
+    }
+
     @Override
     public boolean isPickable() {
         return true;

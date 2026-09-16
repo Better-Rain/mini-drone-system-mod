@@ -26,10 +26,11 @@ public final class DronePlacement {
     public static double[] nedOffsetFor(
         NedWorldTransform origin, double worldX, double worldY, double worldZ
     ) {
+        double scale = origin.metresPerBlock();
         return new double[] {
-            origin.originZ() - worldZ,
-            origin.originX() - worldX,
-            origin.originY() - worldY
+            (origin.originZ() - worldZ) * scale,
+            (origin.originX() - worldX) * scale,
+            (origin.originY() - worldY) * scale
         };
     }
 
@@ -37,10 +38,11 @@ public final class DronePlacement {
     public static double[] worldPositionFor(
         NedWorldTransform origin, double north, double east, double down
     ) {
+        double scale = origin.metresPerBlock();
         return new double[] {
-            origin.originX() - east,
-            origin.originY() - down,
-            origin.originZ() - north
+            origin.originX() - east / scale,
+            origin.originY() - down / scale,
+            origin.originZ() - north / scale
         };
     }
 }

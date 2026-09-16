@@ -53,4 +53,29 @@ public final class DronePlacementHook {
         }
         return result;
     }
+
+    /**
+     * Picks the drone back up: right-clicking the vehicle itself returns it to the field
+     * origin.
+     *
+     * <p>The counterpart of placing it. Placing carries the vehicle to a block; this carries
+     * it home - which before meant remembering {@code /minidrone drone reset}, and an
+     * operator who has just put the drone on the far side of the arena should not have to.
+     * Same gate as placing: a vehicle that is still flying is not moved.
+     */
+    public static VirtualDroneManager.OriginResetResult collect(ServerPlayer player) {
+        VirtualDroneManager active = manager;
+        if (active == null) {
+            return VirtualDroneManager.OriginResetResult.WRONG_DIMENSION;
+        }
+        VirtualDroneManager.OriginResetResult result = active.resetFlightOrigin(player);
+        if (result == VirtualDroneManager.OriginResetResult.RESET) {
+            player.displayClientMessage(
+                net.minecraft.network.chat.Component.literal(
+                    "Drone returned to the field origin."),
+                false
+            );
+        }
+        return result;
+    }
 }

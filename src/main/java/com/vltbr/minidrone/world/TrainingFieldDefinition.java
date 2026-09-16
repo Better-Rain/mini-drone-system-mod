@@ -158,7 +158,17 @@ public record TrainingFieldDefinition(
 
     /** The NED origin this field implies, one block above the surface layer. */
     public NedWorldTransform originTransform() {
-        return new NedWorldTransform(originX, topY + ArenaOrigin.PAD_SURFACE_OFFSET_M, originZ);
+        return new NedWorldTransform(
+            originX,
+            topY + ArenaOrigin.PAD_SURFACE_OFFSET_M,
+            originZ,
+            WorldScale.metresPerBlock());
+    }
+
+    /** The footprint in metres, which is what the monitoring side is told. */
+    public double[] sizeM() {
+        double scale = WorldScale.metresPerBlock();
+        return new double[] {widthM() * scale, depthM() * scale};
     }
 
     /** The same field with its origin on the {@code minX}/{@code minZ} corner block. */
