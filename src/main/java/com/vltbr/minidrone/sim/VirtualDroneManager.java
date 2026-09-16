@@ -37,6 +37,14 @@ public final class VirtualDroneManager implements VirtualFlightController {
      * the entity.
      */
     public void tick() {
+        // The world is authoritative for position: adopt where the entity actually is
+        // (a player's shove, a piston, anything) before the plant integrates this tick.
+        DroneWorldController.StepResult current = worldController.entityPosition();
+        if (current != null) {
+            primaryDrone.adoptExternalPosition(
+                current.northM(), current.eastM(), current.downM(),
+                false, false, false, false, current.supported());
+        }
         primaryDrone.tick();
         DroneWorldController.StepResult step = worldController.simulateStep(primaryDrone.snapshot());
         if (step != null) {

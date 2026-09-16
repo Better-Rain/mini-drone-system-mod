@@ -66,12 +66,25 @@ public final class DroneWorldController implements AutoCloseable {
         }
 
         WorldPose wanted = transform.toWorldPose(snapshot);
-        // NED measures to the vehicle feet; the entity position is its centre.
-        double wantedCentreY = wanted.y() + HALF_HEIGHT_M;
-        Vec3 current = entity.position();
-        double dx = wanted.x() - current.x;
-        double dy = wantedCentreY - current.y;
-        double dz = wanted.z() - current.z;
+
+        // Work from the entity's own bounding box rather than from an assumption about
+        // which corner of it the entity's position is. Minecraft puts an entity's
+        // position at the *bottom* of its box, and the code here used to place the centre
+        // of the box at the wanted height while the renderer lifted the model another
+        // 0.28 blocks: the vehicle visibly hovered about 45 cm above whatever it had
+        // landed on. Deriving the box from the entity and moving by centre deltas cannot
+        // go wrong that way.
+        AABB box = entity.getBoundingBox();
+        double halfWidth = Math.max(0.05, (box.maxX - box.minX) / 2.0);
+        double halfHeight = Math.max(0.05, (box.maxY - box.minY) / 2.0);
+        double centreX = (box.minX + box.maxX) / 2.0;
+        double centreY = (box.minY + box.maxY) / 2.0;
+        double centreZ = (box.minZ + box.maxZ) / 2.0;
+        // The NED origin sits at the vehicle's feet, so the box bottom is the target.
+        double wantedCentreY = wanted.y() + halfHeight;
+        double dx = wanted.x() - centreX;
+        double dy = wantedCentreY - centreY;
+        double dz = wanted.z() - centreZ;
 
         PhysicsStep.Result resolved;
         if (Math.sqrt(dx * dx + dy * dy + dz * dz) > MAX_PHYSICS_STEP_M) {
@@ -79,14 +92,18 @@ public final class DroneWorldController implements AutoCloseable {
                 wanted.x(), wantedCentreY, wanted.z(), false, false, false);
         } else {
             resolved = PhysicsStep.resolve(
-                current.x, current.y, current.z,
+                centreX, centreY, centreZ,
                 dx, dy, dz,
-                HALF_WIDTH_M, HALF_HEIGHT_M,
+                halfWidth, halfHeight,
                 this::isBoxFree
             );
         }
 
-        entity.setPos(resolved.x(), resolved.y(), resolved.z());
+        // Translate, so the placement cannot depend on where the position sits in the box.
+        entity.setPos(
+            entity.getX() + (resolved.x() - centreX),
+            entity.getY() + (resolved.y() - centreY),
+            entity.getZ() + (resolved.z() - centreZ));
         entity.setYRot(wanted.yawDegrees());
         entity.setXRot(wanted.pitchDegrees());
         entity.setDeltaMovement(new Vec3(
@@ -127,6 +144,31 @@ public final class DroneWorldController implements AutoCloseable {
             resolved.blockedHorizontally(), resolved.blockedVertically(),
             resolved.blockedZ(), resolved.blockedX(),
             supported, impact);
+    }
+
+    /**
+     * Where the entity is *right now*, in local NED, without moving anything.
+     *
+     * <p>The world is the authority for position: a player shoving the drone, a piston,
+     * or anything else that moves it has to survive the next physics step, and the only
+     * way that works is for the simulation to adopt the entity's actual position before
+     * it integrates its own motion. Reading it first is what makes a push stick instead
+     * of being undone a tick later.
+     */
+    public StepResult entityPosition() {
+        if (entity == null || entity.isRemoved() || transform == null) {
+            return null;
+        }
+        AABB box = entity.getBoundingBox();
+        double halfWidth = Math.max(0.05, (box.maxX - box.minX) / 2.0);
+        double halfHeight = Math.max(0.05, (box.maxY - box.minY) / 2.0);
+        double[] ned = DronePlacement.nedOffsetFor(
+            transform, (box.minX + box.maxX) / 2.0, box.minY, (box.minZ + box.maxZ) / 2.0);
+        boolean supported = !isBoxFree(
+            PhysicsStep.boxAt(
+                (box.minX + box.maxX) / 2.0, (box.minY + box.maxY) / 2.0 - SUPPORT_PROBE_M,
+                (box.minZ + box.maxZ) / 2.0, halfWidth, halfHeight));
+        return new StepResult(ned[0], ned[1], ned[2], false, false, false, false, supported, ImpactModel.Outcome.NONE);
     }
 
     /** Where the world let the vehicle go, what stopped it, and what that meant. */

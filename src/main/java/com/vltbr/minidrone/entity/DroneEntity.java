@@ -107,12 +107,30 @@ public final class DroneEntity extends Entity {
 
     @Override
     public boolean isPushable() {
-        return false;
+        // A player who walks into the drone shoves it: it is an entity in the world first
+        // and a motion-capture target second, so the world is allowed to move it.
+        return true;
+    }
+
+    /**
+     * A shove moves the vehicle directly.
+     *
+     * <p>A plain {@link Entity} never applies its own delta movement - that lives in the
+     * mobile subclasses - so recording a delta here would be forgotten on the next tick.
+     * Moving the position instead lets the simulation adopt wherever the world put the
+     * vehicle, which is what makes a push stick. The physics step runs with the world as
+     * the authority for position, so this is not fighting it.
+     */
+    @Override
+    public void push(double x, double y, double z) {
+        // Horizontal only: the physics step resolves vertical motion against the blocks,
+        // and a downward shove would push the vehicle into the ground it is standing on.
+        setPos(getX() + x, getY(), getZ() + z);
     }
 
     @Override
     public boolean canCollideWith(Entity other) {
-        return false;
+        return true;
     }
 
     @Override
