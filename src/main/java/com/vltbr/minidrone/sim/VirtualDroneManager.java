@@ -12,7 +12,20 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class VirtualDroneManager implements VirtualFlightController {
     private final MinecraftServer server;
-    private final VirtualDroneState primaryDrone = new VirtualDroneState(54, 1, "minecraft_drone_01");
+
+    /**
+     * The drones this world is flying.
+     *
+     * <p>One for now, created through the fleet so its identity comes from the fleet's rules
+     * rather than being written here - it is exactly the {@code minecraft_drone_01} of a
+     * single-drone world, which is what every existing setup and every backend expects. The
+     * fleet is the place the rest of the multi-drone work hangs off; {@link #primaryDrone}
+     * is the same object as {@code fleet.primary()}, so single-drone paths read as they
+     * always did while the loops below are written to walk every drone.
+     */
+    private final VirtualDroneFleet fleet = new VirtualDroneFleet();
+
+    private final VirtualDroneState primaryDrone;
     private final AtomicReference<VirtualDroneSnapshot> publishedState = new AtomicReference<>();
     private final DroneWorldController worldController;
 
@@ -23,9 +36,9 @@ public final class VirtualDroneManager implements VirtualFlightController {
     public VirtualDroneManager(MinecraftServer server, TrainingFieldController fieldController) {
         this.server = server;
         worldController = new DroneWorldController(server, fieldController);
+        primaryDrone = fleet.create(VehicleModel.fromProperties(System.getProperties()));
         // The airframe can be described from the launcher as well as tuned in game;
         // a malformed value leaves the default in place.
-        primaryDrone.setVehicleModel(VehicleModel.fromProperties(System.getProperties()));
         // A world is driving this vehicle, so the world - not the NED plane - is where the
         // ground is.
         primaryDrone.setWorldOwnsTheGround(true);
@@ -122,6 +135,16 @@ public final class VirtualDroneManager implements VirtualFlightController {
         boolean accepted = primaryDrone.setLocalSetpoint(setpoint);
         publish();
         return accepted;
+    }
+
+    /** The drones this world is flying, in creation order. */
+    public VirtualDroneFleet fleet() {
+        return fleet;
+    }
+
+    /** The drone a command names, or null when no drone has that id. */
+    public VirtualDroneState droneById(String droneId) {
+        return fleet.byId(droneId);
     }
 
     public OriginResetResult resetFlightOrigin(ServerPlayer player) {
