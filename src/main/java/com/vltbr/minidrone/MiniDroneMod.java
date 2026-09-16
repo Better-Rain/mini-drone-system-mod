@@ -165,8 +165,11 @@ public final class MiniDroneMod implements ModInitializer {
             // controller, so they report through this bridge while a world runs.
             FieldMarkerHook.install(trainingFieldController);
             trainingFieldController.setChangeListener(this::publishFieldMetadata);
-            DronePlacementHook.install(droneManager);
+            // Create the manager first: installing the hook with the field it is about to
+            // hold still null is why right-clicking the drone answered "no manager is
+            // installed for this world" while everything else worked.
             droneManager = new VirtualDroneManager(server, trainingFieldController);
+            DronePlacementHook.install(droneManager);
             mocapSettings = server.overworld().getDataStorage().computeIfAbsent(
                 VirtualMocapSettingsSavedData.factory(),
                 VirtualMocapSettingsSavedData.DATA_ID
