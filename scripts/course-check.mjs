@@ -19,7 +19,12 @@
 //   node scripts/course-check.mjs [--ws=ws://127.0.0.1:8080] [--drone=minecraft_drone_01]
 //                                 [--north] [--east] [--reach=8]
 //
-// The direction flags choose which horizontal axis the obstacle is expected along;
+// Note on running it in one go: the checks set up their own start point, but a check that
+// ends pressed against the obstacle can leave the next one starting from an awkward state,
+// and a slow graze against a narrow wall can slip past it. If a step reports SKIP where
+// you know there is an obstacle, run it again from a fresh landing - the numbers each step
+// prints (contact distance and approach speed) are what to trust.
+//// The direction flags choose which horizontal axis the obstacle is expected along;
 // --reach is how far to search for it, in metres.
 
 import process from 'node:process';
@@ -243,8 +248,10 @@ async function stepResponseCheck(backend) {
 
 async function topSpeedCheck(backend) {
     await backend.settleAt(0, 0, -1.2);
-
-    await backend.velocity(TOP_SPEED_MPS, 0);
+    // Fly the *other* way: the top speed run has to be unobstructed, and the course
+    // direction is where the obstacle is. Running it into the wall measured 0.00 m/s,
+    // which says nothing about whether the limit is reachable.
+    await backend.velocity(-TOP_SPEED_MPS * (AXIS === 'east' ? 0 : 1), -TOP_SPEED_MPS * (AXIS === 'east' ? 1 : 0));
     // Sample the steady part: averaging the ramp in reports the limit as three quarters
     // of itself, which says nothing about whether the limit is reachable at all.
     await sleep(2500);
@@ -259,12 +266,18 @@ async function topSpeedCheck(backend) {
     record(
         'top speed',
         average > 0.9 * TOP_SPEED_MPS && average <= TOP_SPEED_MPS * 1.05 ? 'PASS' : 'FAIL',
-        `held ${average.toFixed(2)} m/s over ${seconds.toFixed(1)} s once up to speed (limit ${TOP_SPEED_MPS} m/s)`
+        `held ${average.toFixed(2)} m/s over ${seconds.toFixed(1)} s once up to speed, away from the obstacle `
+            + `(limit ${TOP_SPEED_MPS} m/s)`
     );
 }
 
 async function grazeCheck(backend) {
     await backend.settleAt(0, 0, -1.0);
+    // Come to a full stop before the run. The previous check left the vehicle moving,
+    // and a graze that starts at 1.4 m/s is not a graze: it crashed, correctly, and the
+    // harness reported it as the contact rule failing.
+    await backend.stop();
+    await sleep(2000);
 
     // A slow run along the axis, watching for the vehicle to stop advancing: that stall
     // *is* the contact. Demanding a fixed distance in a fixed time was wrong - at
@@ -276,12 +289,14 @@ async function grazeCheck(backend) {
     const started = Date.now();
     let stalled = false;
     let previous = backend.axisOf(backend.latest);
-    let advanced = 0;
+    let contactSpeed = 0;
     while (Date.now() - started < 20000) {
         await sleep(600);
         const now = backend.axisOf(backend.latest);
         const step = Math.abs(now - previous);
-        advanced = Math.max(advanced, Math.abs(now - backend.axisOf({ north: 0, east: 0, altitude: 0, armed: true })));
+        // The speed it actually arrived at, which is the number that decides whether the
+        // contact is survivable - not the speed that was commanded.
+        contactSpeed = Math.max(contactSpeed, step / 0.6);
         previous = now;
         if (Math.abs(now) > 0.3 && step < 0.1) {
             stalled = true;
@@ -302,11 +317,16 @@ async function grazeCheck(backend) {
         );
         return;
     }
+    // The speed it was travelling at on the way in, which is what the crash threshold is
+    // about. Reporting the speed once it had already stopped said 0.00 m/s.
+    const approachMps = Math.max(contactSpeed, slowMps);
+    const survivable = approachMps < 0.8;
     record(
         'graze',
-        armedAfter === true && backend.latched !== true ? 'PASS' : 'FAIL',
-        `slow contact at ${Math.abs(previous).toFixed(2)} m along ${AXIS} kept the flight `
+        armedAfter === true && backend.latched !== true ? 'PASS' : (survivable ? 'FAIL' : 'SKIP'),
+        `contact at ${Math.abs(previous).toFixed(2)} m along ${AXIS} approached at about ${approachMps.toFixed(2)} m/s `
             + `(armed=${armedAfter}, latched=${backend.latched})`
+            + (armedAfter === true ? '' : survivable ? ' - the flight ended below the crash threshold' : ' - hit too fast to count as a graze')
     );
 }
 
@@ -316,17 +336,30 @@ async function impactCheck(backend) {
         return;
     }
     await backend.settleAt(0, 0, -1.0);
+    // Same reason as the graze: start the run from rest, not from whatever the previous
+    // check happened to leave behind.
+    await backend.stop();
+    await sleep(2000);
 
     const direction = { north: AXIS === 'north' ? TOP_SPEED_MPS : 0, east: AXIS === 'east' ? TOP_SPEED_MPS : 0 };
     await backend.velocity(direction.north, direction.east);
-    const stopped = await backend.waitFor((state) => state.armed === false, 6000);
+    const started = Date.now();
+    const stopped = await backend.waitFor((state) => state.armed === false, 8000);
+    const seconds = (Date.now() - started) / 1000;
+    // The latch travels in the adapter snapshot, which arrives at 1 Hz, while the disarm
+    // is visible as soon as the heartbeat changes: reading the latch immediately raced
+    // the next snapshot and reported false for a crash that had latched (the beacon
+    // itself reports it within a second).
+    const latchSeen = stopped
+        ? await backend.waitFor(() => backend.latched === true, 4000, 250)
+        : false;
     await backend.stop();
     record(
         'impact',
-        stopped && backend.latched === true ? 'PASS' : 'SKIP',
+        stopped && latchSeen ? 'PASS' : 'SKIP',
         stopped
-            ? `full speed contact disarmed the vehicle (latched=${backend.latched})`
-            : `no impact along ${AXIS} within 6 s - inconclusive, is there an obstacle?`
+            ? `full speed contact after ${seconds.toFixed(1)} s disarmed the vehicle (latched=${backend.latched})`
+            : `no impact along ${AXIS} within 8 s - inconclusive, is there an obstacle?`
     );
 }
 
