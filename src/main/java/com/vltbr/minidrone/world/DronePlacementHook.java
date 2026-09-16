@@ -66,9 +66,18 @@ public final class DronePlacementHook {
     public static VirtualDroneManager.OriginResetResult collect(ServerPlayer player) {
         VirtualDroneManager active = manager;
         if (active == null) {
+            // Distinguishable in the log, because "no manager installed" and "wrong
+            // dimension" used to come back as the same answer and the message then blamed
+            // the dimension for both.
+            LOGGER.info("Collect refused: no virtual drone manager is installed for this world.");
             return VirtualDroneManager.OriginResetResult.WRONG_DIMENSION;
         }
         VirtualDroneManager.OriginResetResult result = active.resetFlightOrigin(player);
+        LOGGER.info(
+            "Collect for {} in {} returned {}",
+            player.getName().getString(),
+            player.serverLevel().dimension().location(),
+            result);
         if (result == VirtualDroneManager.OriginResetResult.RESET) {
             player.displayClientMessage(
                 net.minecraft.network.chat.Component.literal(
@@ -78,4 +87,7 @@ public final class DronePlacementHook {
         }
         return result;
     }
+
+    private static final org.slf4j.Logger LOGGER =
+        org.slf4j.LoggerFactory.getLogger("mini-drone-placement");
 }

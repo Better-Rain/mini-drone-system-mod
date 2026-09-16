@@ -124,6 +124,21 @@ public final class VirtualDroneState {
      * at all).
      */
     private boolean supportedByWorld = true;
+
+    /**
+     * Whether a real world decides where the ground is.
+     *
+     * <p>Without one - the headless simulation the tests and the self-test run - the NED
+     * plane is the floor, which is what every one of them expects. With one, it is not:
+     * the world's collision answers are the only thing that stops a fall, so breaking the
+     * block under a parked vehicle makes it drop instead of hanging on the field's own
+     * zero. That was the operator's report - the physics still obeyed the field.
+     */
+    private boolean worldOwnsTheGround;
+
+    public void setWorldOwnsTheGround(boolean owned) {
+        this.worldOwnsTheGround = owned;
+    }
     /**
      * Set when the vehicle has been destroyed by an impact.
      *
@@ -233,8 +248,8 @@ public final class VirtualDroneState {
                 fallSpeedMps + FALL_GRAVITY_MPS2 * dt
             );
             velocityDownMps = fallSpeedMps;
-            downM = Math.min(0.0, downM + fallSpeedMps * dt);
-            if (downM >= -GROUND_EPSILON_M) {
+            downM += fallSpeedMps * dt;
+            if (!worldOwnsTheGround && downM >= -GROUND_EPSILON_M) {
                 downM = 0.0;
                 velocityDownMps = 0.0;
                 fallSpeedMps = 0.0;

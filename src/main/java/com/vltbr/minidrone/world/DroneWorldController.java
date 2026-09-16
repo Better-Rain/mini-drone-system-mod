@@ -113,10 +113,15 @@ public final class DroneWorldController implements AutoCloseable {
         ));
 
         double[] ned = DronePlacement.nedOffsetFor(
-            transform, resolved.x(), resolved.y() - HALF_HEIGHT_M, resolved.z());
-        boolean supported = !isBoxFree(
-            PhysicsStep.boxAt(resolved.x(), resolved.y() - SUPPORT_PROBE_M, resolved.z(),
-                HALF_WIDTH_M, HALF_HEIGHT_M));
+            transform, resolved.x(), resolved.y() - halfHeight, resolved.z());
+        // A thin slab *below the feet*. Probing a full-height box centred below the box
+        // centre included the vehicle's own volume, so on a solid floor layer the
+        // neighbouring blocks still counted as support after the one underneath was broken
+        // and the vehicle hung in the air. Support means something underneath it.
+        double feetY = resolved.y() - halfHeight;
+        boolean supported = !isBoxFree(PhysicsStep.boxAt(
+            resolved.x(), feetY - SUPPORT_PROBE_M / 2.0, resolved.z(),
+            halfWidth, SUPPORT_PROBE_M / 2.0));
 
         // What the impact did, not just that there was one: hitting a wall at speed
         // destroys the flight, while touching down at the controlled descent rate does
@@ -166,8 +171,8 @@ public final class DroneWorldController implements AutoCloseable {
             transform, (box.minX + box.maxX) / 2.0, box.minY, (box.minZ + box.maxZ) / 2.0);
         boolean supported = !isBoxFree(
             PhysicsStep.boxAt(
-                (box.minX + box.maxX) / 2.0, (box.minY + box.maxY) / 2.0 - SUPPORT_PROBE_M,
-                (box.minZ + box.maxZ) / 2.0, halfWidth, halfHeight));
+                (box.minX + box.maxX) / 2.0, box.minY - SUPPORT_PROBE_M / 2.0,
+                (box.minZ + box.maxZ) / 2.0, halfWidth, SUPPORT_PROBE_M / 2.0));
         return new StepResult(ned[0], ned[1], ned[2], false, false, false, false, supported, ImpactModel.Outcome.NONE);
     }
 

@@ -26,6 +26,9 @@ public final class VirtualDroneManager implements VirtualFlightController {
         // The airframe can be described from the launcher as well as tuned in game;
         // a malformed value leaves the default in place.
         primaryDrone.setVehicleModel(VehicleModel.fromProperties(System.getProperties()));
+        // A world is driving this vehicle, so the world - not the NED plane - is where the
+        // ground is.
+        primaryDrone.setWorldOwnsTheGround(true);
         publish();
     }
 
