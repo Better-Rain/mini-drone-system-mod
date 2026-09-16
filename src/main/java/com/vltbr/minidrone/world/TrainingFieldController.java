@@ -206,10 +206,14 @@ public final class TrainingFieldController {
         }
         report.append("Training field: ").append(field.describe()).append('.');
         double[] offset = field.centerOffsetM();
+        double[] sizeM = field.sizeM();
+        double scale = WorldScale.metresPerBlock();
         report.append(String.format(
             Locale.ROOT,
-            " advertised as field_size_m=[%d,%d] centred_at_origin=%s field_center_m=[%.2f,%.2f].",
-            field.widthM(), field.depthM(), field.isCentred(), offset[0], offset[1]));
+            " advertised as field_size_m=[%.2f,%.2f] (%d,%d blocks at %.4g m/block)"
+                + " centred_at_origin=%s field_center_m=[%.2f,%.2f].",
+            sizeM[0], sizeM[1], field.widthM(), field.depthM(), scale,
+            field.isCentred(), offset[0] * scale, offset[1] * scale));
         report.append(String.format(
             Locale.ROOT,
             " NED origin: world (%.2f, %.2f, %.2f) = LOCAL_POSITION_NED (0, 0, 0).",
