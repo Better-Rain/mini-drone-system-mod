@@ -16,6 +16,9 @@ import net.minecraft.world.phys.Vec3;
 import java.util.Locale;
 
 public final class DroneEntity extends Entity {
+    /** How far one shove moves the vehicle, per tick of contact. */
+    private static final double ENTITY_SHOVE_MPS = 0.06;
+
     private static final EntityDataAccessor<Boolean> ARMED = SynchedEntityData.defineId(
         DroneEntity.class,
         EntityDataSerializers.BOOLEAN
@@ -35,7 +38,11 @@ public final class DroneEntity extends Entity {
 
     public DroneEntity(EntityType<? extends DroneEntity> entityType, Level level) {
         super(entityType, level);
-        noPhysics = true;
+        // Deliberately NOT noPhysics: vanilla's entity pushing starts with
+        // `if (!entity.noPhysics && !this.noPhysics)`, so a noPhysics vehicle can never be
+        // shoved by a player walking into it - which is exactly what the operator found.
+        // Block collision for this vehicle is resolved by the physics step against
+        // getBoundingBox(), not by Entity.move, so nothing here depends on the flag.
         setNoGravity(true);
         setInvulnerable(true);
     }
@@ -96,7 +103,6 @@ public final class DroneEntity extends Entity {
     @Override
     public void tick() {
         super.tick();
-        noPhysics = true;
         setNoGravity(true);
     }
 
@@ -126,6 +132,26 @@ public final class DroneEntity extends Entity {
         // Horizontal only: the physics step resolves vertical motion against the blocks,
         // and a downward shove would push the vehicle into the ground it is standing on.
         setPos(getX() + x, getY(), getZ() + z);
+    }
+
+    /**
+     * Being shoved by another entity, computed here rather than inherited.
+     *
+     * <p>Vanilla's version is skipped for vehicles whose {@code noPhysics} is set, and it
+     * only records a delta movement - which a plain {@link Entity} never applies. This
+     * vehicle is a physical object in the world, so a shove moves it outright and the
+     * simulation adopts the new position on its next tick.
+     */
+    @Override
+    public void push(Entity entity) {
+        double dx = getX() - entity.getX();
+        double dz = getZ() - entity.getZ();
+        double distance = Math.max(Math.abs(dx), Math.abs(dz));
+        if (distance < 1.0E-4) {
+            return;
+        }
+        double shove = ENTITY_SHOVE_MPS;
+        push(dx / distance * shove, 0.0, dz / distance * shove);
     }
 
     @Override
