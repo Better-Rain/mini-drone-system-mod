@@ -36,6 +36,32 @@ public final class DroneEntity extends Entity {
         EntityDataSerializers.FLOAT
     );
 
+    /**
+     * Which drone in the fleet this entity is.
+     *
+     * <p>Synced so both sides agree, and defaulted to the id a single-drone world has always
+     * used, so nothing observable changes while there is only one. Multi-drone work needs it
+     * before anything else: a right-click on an entity has to mean <em>that</em> vehicle, and
+     * the world controller and the health beacon have to be able to say which one they are
+     * talking about.
+     */
+    private static final String DEFAULT_DRONE_ID = "minecraft_drone_01";
+
+    private static final EntityDataAccessor<String> DRONE_ID = SynchedEntityData.defineId(
+        DroneEntity.class,
+        EntityDataSerializers.STRING
+    );
+
+    /** The id of the drone this entity shows, which is what commands and the beacon key on. */
+    public String droneId() {
+        return entityData.get(DRONE_ID);
+    }
+
+    /** Points this entity at another drone in the fleet. */
+    public void setDroneId(String droneId) {
+        entityData.set(DRONE_ID, droneId == null || droneId.isBlank() ? DEFAULT_DRONE_ID : droneId);
+    }
+
     public DroneEntity(EntityType<? extends DroneEntity> entityType, Level level) {
         super(entityType, level);
         // Deliberately NOT noPhysics: vanilla's entity pushing starts with
@@ -53,6 +79,7 @@ public final class DroneEntity extends Entity {
         builder.define(AIRBORNE, false);
         builder.define(ROLL_DEGREES, 0.0F);
         builder.define(BATTERY_PERCENT, 100.0F);
+        builder.define(DRONE_ID, DEFAULT_DRONE_ID);
     }
 
     public void applySnapshot(VirtualDroneSnapshot snapshot, WorldPose pose) {
