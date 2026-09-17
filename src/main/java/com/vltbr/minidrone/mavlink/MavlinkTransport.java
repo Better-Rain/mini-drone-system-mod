@@ -400,6 +400,9 @@ public final class MavlinkTransport {
             fieldMetadata.get(),
             droneManager.primaryDrone().safetyLatched()
         );
+        // With one drone this returns the payload untouched, byte for byte, so nothing
+        // downstream changes until a second vehicle actually exists.
+        payload = MocapHealthFleet.appendFleetDrones(payload, droneManager.fleet().all());
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(
             bytes,
