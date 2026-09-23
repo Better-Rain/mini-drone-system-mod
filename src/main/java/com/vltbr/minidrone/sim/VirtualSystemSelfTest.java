@@ -25,6 +25,7 @@ public final class VirtualSystemSelfTest {
         runner.check("PVA yaw channel", VirtualSystemSelfTest::pvaYawChannel);
         runner.check("landing disarms at ground", VirtualSystemSelfTest::landingDisarmsAtGround);
         runner.check("safe reset clears local position", VirtualSystemSelfTest::safeResetClearsLocalPosition);
+        runner.check("fleet keeps per-drone identity and motion", VirtualSystemSelfTest::fleetPerDroneIdentity);
         runner.check("heartbeat codec round trip", VirtualSystemSelfTest::heartbeatCodecRoundTrip);
         runner.check("NED world transform", VirtualSystemSelfTest::nedWorldTransform);
         runner.check("arena layout counts", VirtualSystemSelfTest::arenaLayoutCounts);
@@ -167,6 +168,50 @@ public final class VirtualSystemSelfTest {
         near(snapshot.northM(), 0.0, 0.0001, "reset north");
         near(snapshot.eastM(), 0.0, 0.0001, "reset east");
         near(snapshot.downM(), 0.0, 0.0001, "reset down");
+    }
+
+    /**
+     * The fleet is more than a list: two drones are two vehicles.
+     *
+     * <p>This is the simulation half of per-drone placement and collection. The world half
+     * (one entity per drone id) cannot be exercised without a world, so what is pinned here
+     * is the identity and isolation the world keys on: distinct ids and MAVLink system ids,
+     * motion in one drone that leaves the other untouched, and a reset that clears only the
+     * drone it was asked for.
+     */
+    private static void fleetPerDroneIdentity() {
+        VirtualDroneFleet fleet = new VirtualDroneFleet();
+        VirtualDroneState first = fleet.create(VehicleModel.DEFAULTS);
+        VirtualDroneState second = fleet.create(VehicleModel.DEFAULTS);
+        require(first != null && second != null, "the fleet refused a second drone");
+        require(
+            VirtualDroneFleet.DEFAULT_DRONE_ID.equals(first.snapshot().droneId()),
+            "the first drone lost the id a single-drone world advertises"
+        );
+        require(
+            !first.snapshot().droneId().equals(second.snapshot().droneId()),
+            "two drones share one id"
+        );
+        require(
+            first.snapshot().systemId() != second.snapshot().systemId(),
+            "two drones share one MAVLink system id"
+        );
+        require(fleet.byId(second.snapshot().droneId()) == second, "the fleet lost a drone by id");
+
+        require(second.setMode(MavlinkProtocol.ARDUCOPTER_MODE_GUIDED), "GUIDED was rejected");
+        require(second.setArmed(true), "arming the second drone was rejected");
+        require(second.takeoff(0.5), "the second drone refused takeoff");
+        tick(second, 20);
+
+        require(second.snapshot().airborne(), "the second drone did not take off");
+        require(!first.snapshot().airborne(), "the first drone moved without being commanded");
+        near(first.snapshot().downM(), 0.0, 0.0001, "the untouched drone");
+
+        require(!second.resetLocalPosition(), "an airborne drone accepted a reset");
+        require(second.land(), "the second drone refused to land");
+        tick(second, 20);
+        require(second.resetLocalPosition(), "a landed drone refused a reset");
+        near(second.snapshot().downM(), 0.0, 0.0001, "the reset drone");
     }
 
     private static void heartbeatCodecRoundTrip() {

@@ -62,6 +62,21 @@ public final class DroneEntity extends Entity {
         entityData.set(DRONE_ID, droneId == null || droneId.isBlank() ? DEFAULT_DRONE_ID : droneId);
     }
 
+    /**
+     * The MAVLink system id this drone had when it was last saved.
+     *
+     * <p>Saved alongside the id so a world that is loaded again rebuilds the same identities
+     * the monitoring side already knows: the fleet hands out system ids, and re-deriving them
+     * from scratch would rename every aircraft the operator has ever commanded.
+     */
+    public int systemIdHint() {
+        return systemIdHint;
+    }
+
+    public void setSystemIdHint(int systemId) {
+        this.systemIdHint = systemId;
+    }
+
     public DroneEntity(EntityType<? extends DroneEntity> entityType, Level level) {
         super(entityType, level);
         // Deliberately NOT noPhysics: vanilla's entity pushing starts with
@@ -123,6 +138,18 @@ public final class DroneEntity extends Entity {
         return entityData.get(ROLL_DEGREES);
     }
 
+    /**
+     * The bank angle the renderer applies.
+     *
+     * <p>Yaw and pitch ride on the entity's own rotation, which the physics step sets every
+     * tick; roll has no entity field of its own and lives in synced data instead. Nothing was
+     * writing it during flight - only when the entity was first placed - so a vehicle sliding
+     * sideways rendered perfectly level while the simulation was banking it.
+     */
+    public void setRollDegrees(float rollDegrees) {
+        entityData.set(ROLL_DEGREES, rollDegrees);
+    }
+
     public float batteryPercent() {
         return entityData.get(BATTERY_PERCENT);
     }
@@ -158,7 +185,7 @@ public final class DroneEntity extends Entity {
             return net.minecraft.world.InteractionResult.SUCCESS;
         }
         com.vltbr.minidrone.sim.VirtualDroneManager.OriginResetResult result =
-            com.vltbr.minidrone.world.DronePlacementHook.collect(serverPlayer);
+            com.vltbr.minidrone.world.DronePlacementHook.collect(serverPlayer, droneId());
         if (result == com.vltbr.minidrone.sim.VirtualDroneManager.OriginResetResult.DRONE_ACTIVE) {
             player.displayClientMessage(
                 net.minecraft.network.chat.Component.literal(
@@ -237,14 +264,31 @@ public final class DroneEntity extends Entity {
 
     @Override
     public boolean shouldBeSaved() {
-        return false;
+        // A placed drone is part of the world: the operator put it there, so it has to be
+        // there again after a restart. Not saving it meant every restart left the operator
+        // with one aircraft and a second one to place by hand.
+        return true;
     }
+
+    private static final String DRONE_ID_TAG = "MiniDroneId";
+    private static final String SYSTEM_ID_TAG = "MiniDroneSystemId";
 
     @Override
     protected void readAdditionalSaveData(CompoundTag tag) {
+        if (tag.contains(DRONE_ID_TAG)) {
+            setDroneId(tag.getString(DRONE_ID_TAG));
+        }
+        if (tag.contains(SYSTEM_ID_TAG)) {
+            systemIdHint = tag.getInt(SYSTEM_ID_TAG);
+        }
     }
 
     @Override
     protected void addAdditionalSaveData(CompoundTag tag) {
+        tag.putString(DRONE_ID_TAG, droneId());
+        tag.putInt(SYSTEM_ID_TAG, systemIdHint);
     }
+
+    /** The MAVLink system id this entity was saved with, or 0 when it never had one. */
+    private int systemIdHint;
 }

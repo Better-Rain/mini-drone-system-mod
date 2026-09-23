@@ -1,6 +1,5 @@
 package com.vltbr.minidrone.mavlink;
 
-import com.vltbr.minidrone.MiniDroneMod;
 import com.vltbr.minidrone.sim.LocalSetpoint;
 import com.vltbr.minidrone.sim.VirtualFlightController;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
@@ -20,6 +19,7 @@ public final class VirtualAutopilot {
     private final VirtualFlightController droneManager;
     private final Consumer<MavlinkOutboundMessage> outbound;
     private final ForwardingHold forwardingHold;
+    private final AutopilotLog log;
     private final Map<String, Parameter> parameters = new LinkedHashMap<>();
 
     public VirtualAutopilot(
@@ -28,116 +28,200 @@ public final class VirtualAutopilot {
         Consumer<MavlinkOutboundMessage> outbound,
         ForwardingHold forwardingHold
     ) {
+        this(executor, droneManager, outbound, forwardingHold, AutopilotLog.SILENT);
+    }
+
+    /**
+     * `log` receives what this autopilot did, as lines the operator can read. The command
+     * path is deliberately free of game classes so a test can drive decoded frames through
+     * it, and the mod's logger lives on a class Minecraft types hang off, so the sink is a
+     * parameter rather than a direct call.
+     */
+    public VirtualAutopilot(
+        Executor executor,
+        VirtualFlightController droneManager,
+        Consumer<MavlinkOutboundMessage> outbound,
+        ForwardingHold forwardingHold,
+        AutopilotLog log
+    ) {
         this.executor = executor;
         this.droneManager = droneManager;
         this.outbound = outbound;
         this.forwardingHold = forwardingHold;
+        this.log = log == null ? AutopilotLog.SILENT : log;
         registerParameters();
     }
 
     public void handle(MavlinkV1Frame frame) {
         try {
+            // Resolve the vehicle from the message's *target*, not from the frame header: the
+            // header carries the sender's system id (a ground station's, here), and the
+            // target is the only thing that says which aircraft the message is for.
             switch (frame.messageId()) {
-                case MavlinkProtocol.COMMAND_LONG -> handleCommandLong(
-                    MavlinkMessages.decodeCommandLong(frame.payload())
-                );
-                case MavlinkProtocol.SET_MODE -> handleSetMode(
-                    MavlinkMessages.decodeSetMode(frame.payload())
-                );
-                case MavlinkProtocol.PARAM_REQUEST_READ -> handleParamRequestRead(
-                    MavlinkMessages.decodeParamRequestRead(frame.payload())
-                );
-                case MavlinkProtocol.PARAM_REQUEST_LIST -> handleParamRequestList(frame.payload());
+                case MavlinkProtocol.COMMAND_LONG -> {
+                    MavlinkMessages.CommandLong command =
+                        MavlinkMessages.decodeCommandLong(frame.payload());
+                    VirtualFlightController vehicle =
+                        targetVehicle(command.targetSystem(), command.targetComponent());
+                    if (vehicle != null) {
+                        handleCommandLong(vehicle, command);
+                    }
+                }
+                case MavlinkProtocol.SET_MODE -> {
+                    MavlinkMessages.SetMode setMode =
+                        MavlinkMessages.decodeSetMode(frame.payload());
+                    VirtualFlightController vehicle = targetVehicle(setMode.targetSystem(), 0);
+                    if (vehicle != null) {
+                        handleSetMode(vehicle, setMode);
+                    }
+                }
+                case MavlinkProtocol.PARAM_REQUEST_READ -> {
+                    MavlinkMessages.ParamRequestRead request =
+                        MavlinkMessages.decodeParamRequestRead(frame.payload());
+                    VirtualFlightController vehicle =
+                        targetVehicle(request.targetSystem(), request.targetComponent());
+                    if (vehicle != null) {
+                        handleParamRequestRead(vehicle, request);
+                    }
+                }
+                case MavlinkProtocol.PARAM_REQUEST_LIST -> {
+                    byte[] payload = frame.payload();
+                    if (payload.length >= 2) {
+                        VirtualFlightController vehicle = targetVehicle(
+                            Byte.toUnsignedInt(payload[0]),
+                            Byte.toUnsignedInt(payload[1]));
+                        if (vehicle != null) {
+                            handleParamRequestList(vehicle);
+                        }
+                    }
+                }
                 case MavlinkProtocol.PARAM_SET -> handleParamSet(frame.payload());
-                case MavlinkProtocol.SET_GPS_GLOBAL_ORIGIN -> handleSetGpsGlobalOrigin(frame.payload());
-                case MavlinkProtocol.SET_POSITION_TARGET_LOCAL_NED -> handlePositionTarget(frame.payload());
+                case MavlinkProtocol.SET_GPS_GLOBAL_ORIGIN -> {
+                    byte[] payload = frame.payload();
+                    if (payload.length >= 13) {
+                        VirtualFlightController vehicle =
+                            targetVehicle(Byte.toUnsignedInt(payload[12]), 0);
+                        if (vehicle != null) {
+                            handleSetGpsGlobalOrigin(vehicle);
+                        }
+                    }
+                }
+                case MavlinkProtocol.SET_POSITION_TARGET_LOCAL_NED -> {
+                    MavlinkMessages.PositionTargetLocalNed target =
+                        MavlinkMessages.decodePositionTargetLocalNed(frame.payload());
+                    VirtualFlightController vehicle =
+                        targetVehicle(target.targetSystem(), target.targetComponent());
+                    if (vehicle != null) {
+                        handlePositionTarget(vehicle, target);
+                    }
+                }
                 default -> {
                     // Ground-control heartbeats and unsupported diagnostic requests are harmless.
                 }
             }
         } catch (IllegalArgumentException exception) {
-            MiniDroneMod.LOGGER.warn(
-                "Rejected malformed MAVLink message {}: {}",
-                frame.messageId(),
-                exception.getMessage()
+            log.log(
+                "warn",
+                "Rejected malformed MAVLink message " + frame.messageId() + ": " + exception.getMessage()
             );
         }
     }
 
-    private void handleCommandLong(MavlinkMessages.CommandLong command) {
-        if (!targetsThisVehicle(command.targetSystem(), command.targetComponent())) {
-            return;
+    /**
+     * The vehicle a message is for, or null when this world does not fly it.
+     *
+     * <p>A target system id of zero means "whoever is listening", which for a single-aircraft
+     * setup is that aircraft and for a fleet is the first one - the same drone every
+     * single-drone path means. Anything else has to name a vehicle this world flies: applying
+     * a message to whichever drone happens to be first would fly the wrong aircraft.
+     */
+    private VirtualFlightController targetVehicle(int targetSystem, int targetComponent) {
+        final int systemId = targetSystem == 0
+            ? droneManager.snapshot().systemId()
+            : targetSystem;
+        VirtualFlightController vehicle = droneManager.vehicleForSystemId(systemId);
+        if (vehicle == null) {
+            log.log("debug", "Ignored MAVLink message for unknown system id " + systemId);
+            return null;
         }
+        final int componentId = vehicle.snapshot().componentId();
+        if (targetComponent != 0 && targetComponent != componentId) {
+            log.log(
+                "debug",
+                "Ignored MAVLink message for unknown component " + targetComponent
+                    + " on system id " + systemId
+            );
+            return null;
+        }
+        return vehicle;
+    }
+
+    private void handleCommandLong(
+        VirtualFlightController vehicle, MavlinkMessages.CommandLong command
+    ) {
         executor.execute(() -> {
             int result = switch (command.command()) {
-                case MavlinkProtocol.MAV_CMD_DO_SET_MODE -> setMode(Math.round(command.params()[1]));
+                case MavlinkProtocol.MAV_CMD_DO_SET_MODE -> setMode(vehicle, Math.round(command.params()[1]));
                 case MavlinkProtocol.MAV_CMD_COMPONENT_ARM_DISARM ->
-                    droneManager.setArmed(command.params()[0] >= 0.5f)
+                    vehicle.setArmed(command.params()[0] >= 0.5f)
                         ? MavlinkProtocol.MAV_RESULT_ACCEPTED
                         : MavlinkProtocol.MAV_RESULT_TEMPORARILY_REJECTED;
                 case MavlinkProtocol.MAV_CMD_NAV_TAKEOFF ->
-                    droneManager.takeoff(command.params()[6])
+                    vehicle.takeoff(command.params()[6])
                         ? MavlinkProtocol.MAV_RESULT_ACCEPTED
                         : MavlinkProtocol.MAV_RESULT_TEMPORARILY_REJECTED;
                 case MavlinkProtocol.MAV_CMD_NAV_LAND ->
-                    droneManager.land()
+                    vehicle.land()
                         ? MavlinkProtocol.MAV_RESULT_ACCEPTED
                         : MavlinkProtocol.MAV_RESULT_TEMPORARILY_REJECTED;
                 case MavlinkProtocol.MAV_CMD_DO_SET_HOME -> {
-                    sendOriginTelemetry();
+                    sendOriginTelemetry(vehicle);
                     yield MavlinkProtocol.MAV_RESULT_ACCEPTED;
                 }
                 case MavlinkProtocol.MAV_CMD_SET_MESSAGE_INTERVAL ->
                     MavlinkProtocol.MAV_RESULT_ACCEPTED;
                 case MavlinkProtocol.MAV_CMD_REQUEST_MESSAGE -> {
-                    sendRequestedMessage(Math.round(command.params()[0]));
+                    sendRequestedMessage(vehicle, Math.round(command.params()[0]));
                     yield MavlinkProtocol.MAV_RESULT_ACCEPTED;
                 }
                 default -> MavlinkProtocol.MAV_RESULT_UNSUPPORTED;
             };
-            send(MavlinkProtocol.COMMAND_ACK, MavlinkMessages.commandAck(command.command(), result));
-            MiniDroneMod.LOGGER.info(
-                "MAVLink command {} completed with result {} for {}",
-                command.command(),
-                result,
-                droneManager.snapshot().droneId()
+            send(
+                vehicle,
+                MavlinkProtocol.COMMAND_ACK,
+                MavlinkMessages.commandAck(command.command(), result)
+            );
+            log.log(
+                "info",
+                "MAVLink command " + command.command() + " completed with result " + result
+                    + " for " + vehicle.snapshot().droneId()
             );
         });
     }
 
-    private void handleSetMode(MavlinkMessages.SetMode setMode) {
-        if (!targetsThisVehicle(setMode.targetSystem(), 0)) {
-            return;
-        }
-        executor.execute(() -> setMode((int) setMode.customMode()));
+    private void handleSetMode(VirtualFlightController vehicle, MavlinkMessages.SetMode setMode) {
+        executor.execute(() -> setMode(vehicle, (int) setMode.customMode()));
     }
 
-    private int setMode(int customMode) {
-        return droneManager.setMode(customMode)
+    private int setMode(VirtualFlightController vehicle, int customMode) {
+        return vehicle.setMode(customMode)
             ? MavlinkProtocol.MAV_RESULT_ACCEPTED
             : MavlinkProtocol.MAV_RESULT_UNSUPPORTED;
     }
 
-    private void handleParamRequestRead(MavlinkMessages.ParamRequestRead request) {
-        if (!targetsThisVehicle(request.targetSystem(), request.targetComponent())) {
-            return;
-        }
+    private void handleParamRequestRead(
+        VirtualFlightController vehicle, MavlinkMessages.ParamRequestRead request
+    ) {
         Parameter parameter = request.parameterId().isEmpty()
             ? parameterAt(request.parameterIndex())
             : parameters.get(request.parameterId());
         if (parameter != null) {
-            sendParameter(parameter);
+            sendParameter(vehicle, parameter);
         }
     }
 
-    private void handleParamRequestList(byte[] payload) {
-        if (payload.length < 2 || !targetsThisVehicle(
-            Byte.toUnsignedInt(payload[0]),
-            Byte.toUnsignedInt(payload[1])
-        )) {
-            return;
-        }
-        parameters.values().forEach(this::sendParameter);
+    private void handleParamRequestList(VirtualFlightController vehicle) {
+        parameters.values().forEach(parameter -> sendParameter(vehicle, parameter));
     }
 
     private void handleParamSet(byte[] payload) {
@@ -148,7 +232,8 @@ public final class VirtualAutopilot {
         float value = data.getFloat();
         int targetSystem = Byte.toUnsignedInt(data.get());
         int targetComponent = Byte.toUnsignedInt(data.get());
-        if (!targetsThisVehicle(targetSystem, targetComponent)) {
+        VirtualFlightController vehicle = targetVehicle(targetSystem, targetComponent);
+        if (vehicle == null) {
             return;
         }
         byte[] id = new byte[16];
@@ -158,22 +243,18 @@ public final class VirtualAutopilot {
         if (current != null) {
             Parameter updated = new Parameter(current.name(), value, current.type(), current.index());
             parameters.put(name, updated);
-            sendParameter(updated);
+            sendParameter(vehicle, updated);
         }
     }
 
-    private void handleSetGpsGlobalOrigin(byte[] payload) {
-        if (payload.length < 13 || !targetsThisVehicle(Byte.toUnsignedInt(payload[12]), 0)) {
-            return;
-        }
-        sendOriginTelemetry();
+    private void handleSetGpsGlobalOrigin(VirtualFlightController vehicle) {
+        sendOriginTelemetry(vehicle);
     }
 
-    private void handlePositionTarget(byte[] payload) {
-        MavlinkMessages.PositionTargetLocalNed target =
-            MavlinkMessages.decodePositionTargetLocalNed(payload);
-        if (!targetsThisVehicle(target.targetSystem(), target.targetComponent())
-            || target.coordinateFrame() != MavlinkProtocol.MAV_FRAME_LOCAL_NED
+    private void handlePositionTarget(
+        VirtualFlightController vehicle, MavlinkMessages.PositionTargetLocalNed target
+    ) {
+        if (target.coordinateFrame() != MavlinkProtocol.MAV_FRAME_LOCAL_NED
             || !target.commandsAnyChannel()) {
             return;
         }
@@ -181,9 +262,7 @@ public final class VirtualAutopilot {
         // relay answers by pausing its multicast; here the equivalent is to stop
         // accepting new setpoints, leaving the vehicle on the last one it took.
         if (!forwardingHold.acceptsSetpoints()) {
-            MiniDroneMod.LOGGER.debug(
-                "Ignored local NED setpoint while motion-capture forwarding is held"
-            );
+            log.log("debug", "Ignored local NED setpoint while motion-capture forwarding is held");
             return;
         }
         // The backend's PVA setpoints use many type_mask combinations, so every
@@ -192,12 +271,12 @@ public final class VirtualAutopilot {
         // the command.
         LocalSetpoint setpoint = toLocalSetpoint(target);
         executor.execute(() -> {
-            boolean accepted = droneManager.setLocalSetpoint(setpoint);
+            boolean accepted = vehicle.setLocalSetpoint(setpoint);
             if (!accepted) {
-                MiniDroneMod.LOGGER.debug(
-                    "Rejected local NED setpoint {} for {}",
-                    setpoint,
-                    droneManager.snapshot().droneId()
+                log.log(
+                    "debug",
+                    "Rejected local NED setpoint " + setpoint + " for "
+                        + vehicle.snapshot().droneId()
                 );
             }
         });
@@ -251,40 +330,42 @@ public final class VirtualAutopilot {
         );
     }
 
-    private void sendRequestedMessage(int messageId) {
-        VirtualDroneSnapshot state = droneManager.snapshot();
+    private void sendRequestedMessage(VirtualFlightController vehicle, int messageId) {
+        VirtualDroneSnapshot state = vehicle.snapshot();
         switch (messageId) {
-            case MavlinkProtocol.ATTITUDE -> send(messageId, MavlinkMessages.attitude(state));
+            case MavlinkProtocol.ATTITUDE -> send(vehicle, messageId, MavlinkMessages.attitude(state));
             case MavlinkProtocol.LOCAL_POSITION_NED ->
-                send(messageId, MavlinkMessages.localPositionNed(state));
+                send(vehicle, messageId, MavlinkMessages.localPositionNed(state));
             case MavlinkProtocol.EKF_STATUS_REPORT ->
-                send(messageId, MavlinkMessages.ekfStatusReport());
+                send(vehicle, messageId, MavlinkMessages.ekfStatusReport());
             case MavlinkProtocol.GPS_GLOBAL_ORIGIN ->
-                send(messageId, MavlinkMessages.gpsGlobalOrigin());
+                send(vehicle, messageId, MavlinkMessages.gpsGlobalOrigin());
             case MavlinkProtocol.HOME_POSITION ->
-                send(messageId, MavlinkMessages.homePosition());
+                send(vehicle, messageId, MavlinkMessages.homePosition());
             case MavlinkProtocol.EXTENDED_SYS_STATE ->
-                send(messageId, MavlinkMessages.extendedSysState(state));
+                send(vehicle, messageId, MavlinkMessages.extendedSysState(state));
             default -> {
                 // An accepted request is allowed to have no response for unsupported diagnostics.
             }
         }
     }
 
-    private void sendOriginTelemetry() {
-        VirtualDroneSnapshot state = droneManager.snapshot();
+    private void sendOriginTelemetry(VirtualFlightController vehicle) {
         send(
+            vehicle,
             MavlinkProtocol.GPS_GLOBAL_ORIGIN,
             MavlinkMessages.gpsGlobalOrigin()
         );
         send(
+            vehicle,
             MavlinkProtocol.HOME_POSITION,
             MavlinkMessages.homePosition()
         );
     }
 
-    private void sendParameter(Parameter parameter) {
+    private void sendParameter(VirtualFlightController vehicle, Parameter parameter) {
         send(
+            vehicle,
             MavlinkProtocol.PARAM_VALUE,
             MavlinkMessages.paramValue(
                 parameter.name(),
@@ -296,14 +377,15 @@ public final class VirtualAutopilot {
         );
     }
 
-    private boolean targetsThisVehicle(int targetSystem, int targetComponent) {
-        VirtualDroneSnapshot state = droneManager.snapshot();
-        return (targetSystem == 0 || targetSystem == state.systemId())
-            && (targetComponent == 0 || targetComponent == state.componentId());
-    }
-
-    private void send(int messageId, byte[] payload) {
-        outbound.accept(new MavlinkOutboundMessage(messageId, payload));
+    private void send(VirtualFlightController vehicle, int messageId, byte[] payload) {
+        VirtualDroneSnapshot state = vehicle.snapshot();
+        // Speak as the vehicle being answered, not as whichever one was created first.
+        outbound.accept(new MavlinkOutboundMessage(
+            state.systemId(),
+            state.componentId(),
+            messageId,
+            payload
+        ));
     }
 
     private Parameter parameterAt(int index) {

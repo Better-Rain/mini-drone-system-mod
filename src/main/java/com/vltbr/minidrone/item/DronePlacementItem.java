@@ -10,11 +10,14 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.context.UseOnContext;
 
 /**
- * Right-click a block to put the virtual drone there.
+ * Right-click a block to add a drone there, or a drone to collect that one.
  *
- * <p>It is the manual counterpart of {@code /minidrone drone reset}: the operator
- * carries the vehicle, the field and its origin stay where they are, and the flight
- * controller's local position becomes the offset from that origin - which is what a
+ * <p>Placing is how a fleet grows: every right-click on a block adds another aircraft with
+ * the next id and MAVLink system id, at that spot. It used to carry the single vehicle
+ * around - the manual counterpart of {@code /minidrone drone reset} - and that behaviour is
+ * now the other half of this item: a right-click on an existing drone brings <em>that</em>
+ * vehicle back to the field origin. The field and its origin stay where they are either way,
+ * so the flight controller's local position is the offset from that origin, which is what a
  * real drone sitting away from the room origin would report.
  */
 public class DronePlacementItem extends Item {
@@ -32,17 +35,19 @@ public class DronePlacementItem extends Item {
             return InteractionResult.SUCCESS;
         }
         BlockPos pos = context.getClickedPos();
-        VirtualDroneManager.PlacementResult result = DronePlacementHook.placeOn(
+        VirtualDroneManager.PlacementOutcome outcome = DronePlacementHook.placeOn(
             context.getLevel(), pos, player instanceof net.minecraft.server.level.ServerPlayer serverPlayer
                 ? serverPlayer
                 : null);
 
-        switch (result) {
+        switch (outcome.result()) {
             case PLACED -> {
-                // The hook already told the operator where it went.
+                // The hook already told the operator which drone went where.
             }
-            case DRONE_ARMED -> player.displayClientMessage(
-                Component.literal("Land and disarm the virtual drone before placing it.")
+            case FLEET_FULL -> player.displayClientMessage(
+                Component.literal(String.format(
+                    "The fleet is full (%d drones). Collect one before adding another.",
+                    com.vltbr.minidrone.sim.VirtualDroneFleet.MAX_DRONES))
                     .withStyle(ChatFormatting.RED),
                 false
             );

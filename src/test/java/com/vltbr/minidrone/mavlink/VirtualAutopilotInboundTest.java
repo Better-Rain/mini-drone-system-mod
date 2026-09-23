@@ -46,6 +46,11 @@ class VirtualAutopilotInboundTest {
         }
 
         @Override
+        public VirtualFlightController vehicleForSystemId(int systemId) {
+            return systemId == drone.snapshot().systemId() ? this : null;
+        }
+
+        @Override
         public boolean setMode(int customMode) {
             return drone.setMode(customMode);
         }

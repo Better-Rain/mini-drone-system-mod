@@ -12,6 +12,18 @@ package com.vltbr.minidrone.sim;
 public interface VirtualFlightController {
     VirtualDroneSnapshot snapshot();
 
+    /**
+     * The vehicle a MAVLink frame addresses, or null when this world does not fly it.
+     *
+     * <p>A MAVLink frame carries a system id and nothing else about who it is for, so with
+     * more than one aircraft the command path has to resolve the frame to <em>that</em>
+     * vehicle. Null is a real answer - a frame for a system id this world does not fly is
+     * dropped rather than applied to whichever drone happens to be first - and a controller
+     * returned here owns one drone's own state, so two aircraft arm, fly and land
+     * independently.
+     */
+    VirtualFlightController vehicleForSystemId(int systemId);
+
     boolean setMode(int customMode);
 
     boolean setArmed(boolean armed);

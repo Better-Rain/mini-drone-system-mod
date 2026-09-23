@@ -287,18 +287,19 @@ public final class MiniDroneMod implements ModInitializer {
                 return 0;
             }
         }
-        var result = droneManager.placeAt(
+        var outcome = droneManager.placeNewDrone(
             resolved.getX() + 0.5, resolved.getY(), resolved.getZ() + 0.5);
-        switch (result) {
+        switch (outcome.result()) {
             case PLACED -> {
                 source.sendSuccess(() -> copyableMessage(String.format(
-                    "Virtual drone placed at (%d, %d, %d); the field and its origin did not move",
-                    resolved.getX(), resolved.getY(), resolved.getZ())), false);
+                    "%s added at (%d, %d, %d); the field and its origin did not move",
+                    outcome.droneId(), resolved.getX(), resolved.getY(), resolved.getZ())), false);
                 return 1;
             }
-            case DRONE_ARMED -> {
-                source.sendFailure(Component.literal(
-                    "Land and disarm the virtual drone before placing it."));
+            case FLEET_FULL -> {
+                source.sendFailure(Component.literal(String.format(
+                    "The fleet is full (%d drones). Collect one before adding another.",
+                    com.vltbr.minidrone.sim.VirtualDroneFleet.MAX_DRONES)));
                 return 0;
             }
             default -> {

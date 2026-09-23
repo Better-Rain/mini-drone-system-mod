@@ -82,7 +82,12 @@ public final class NedWorldTransform {
             originY - downBlocks,
             originZ - northBlocks,
             wrapDegrees(180.0 - Math.toDegrees(yawRad)),
-            (float) -Math.toDegrees(pitchRad),
+            // Pitch keeps its own sign. The scene frame is the documented mirror of NED
+            // (world x = -east, z = -north), and mirroring turns a nose-down attitude into a
+            // nose-down attitude: only the *heading* comes back as 180 - yaw. Negating this
+            // rendered a vehicle accelerating forward as one pitching up - the monitoring view
+            // and the game showed opposite attitudes for the same aircraft.
+            (float) Math.toDegrees(pitchRad),
             (float) Math.toDegrees(rollRad)
         );
     }

@@ -32,38 +32,47 @@ public final class DronePlacementHook {
         return manager != null;
     }
 
-    /** Carries the drone to the top of the block the operator clicked. */
-    public static VirtualDroneManager.PlacementResult placeOn(Level level, BlockPos pos, ServerPlayer player) {
+    /**
+     * Adds a drone on top of the block the operator clicked.
+     *
+     * <p>This is how a second aircraft appears: the fleet hands out the next id and MAVLink
+     * system id, and the vehicle starts its life standing where it was put. It used to carry
+     * the one vehicle to that block; with a fleet, "put the drone here" can only mean "this
+     * is where a drone is", because there is no other way to ask for a second one.
+     */
+    public static VirtualDroneManager.PlacementOutcome placeOn(
+        Level level, BlockPos pos, ServerPlayer player
+    ) {
         VirtualDroneManager active = manager;
         if (active == null || !(level instanceof net.minecraft.server.level.ServerLevel)) {
-            return VirtualDroneManager.PlacementResult.NO_FIELD;
+            return new VirtualDroneManager.PlacementOutcome(
+                VirtualDroneManager.PlacementResult.NO_FIELD, "");
         }
-        VirtualDroneManager.PlacementResult result = active.placeAt(
+        VirtualDroneManager.PlacementOutcome outcome = active.placeNewDrone(
             pos.getX() + 0.5,
             pos.getY() + 1.0,
             pos.getZ() + 0.5
         );
-        if (result == VirtualDroneManager.PlacementResult.PLACED && player != null) {
+        if (outcome.result() == VirtualDroneManager.PlacementResult.PLACED && player != null) {
             player.displayClientMessage(
                 net.minecraft.network.chat.Component.literal(String.format(
-                    "Drone placed at (%d, %d, %d). The field and its origin did not move.",
-                    pos.getX(), pos.getY() + 1, pos.getZ())),
+                    "%s placed at (%d, %d, %d). The field and its origin did not move.",
+                    outcome.droneId(), pos.getX(), pos.getY() + 1, pos.getZ())),
                 false
             );
         }
-        return result;
+        return outcome;
     }
 
     /**
-     * Picks the drone back up: right-clicking the vehicle itself returns it to the field
-     * origin.
+     * Picks one drone back up: right-clicking a vehicle returns <em>that</em> vehicle to the
+     * field origin.
      *
-     * <p>The counterpart of placing it. Placing carries the vehicle to a block; this carries
-     * it home - which before meant remembering {@code /minidrone drone reset}, and an
-     * operator who has just put the drone on the far side of the arena should not have to.
-     * Same gate as placing: a vehicle that is still flying is not moved.
+     * <p>The counterpart of placing it, and per drone: the clicked entity says which one it
+     * is, so collecting the second aircraft never moves the first. Before the entity carried
+     * a drone id, this could only mean the primary vehicle.
      */
-    public static VirtualDroneManager.OriginResetResult collect(ServerPlayer player) {
+    public static VirtualDroneManager.OriginResetResult collect(ServerPlayer player, String droneId) {
         VirtualDroneManager active = manager;
         if (active == null) {
             // Distinguishable in the log, because "no manager installed" and "wrong
@@ -72,7 +81,7 @@ public final class DronePlacementHook {
             LOGGER.info("Collect refused: no virtual drone manager is installed for this world.");
             return VirtualDroneManager.OriginResetResult.WRONG_DIMENSION;
         }
-        VirtualDroneManager.OriginResetResult result = active.resetFlightOrigin(player);
+        VirtualDroneManager.OriginResetResult result = active.resetFlightOrigin(player, droneId);
         LOGGER.info(
             "Collect for {} in {} returned {}",
             player.getName().getString(),
@@ -81,7 +90,7 @@ public final class DronePlacementHook {
         if (result == VirtualDroneManager.OriginResetResult.RESET) {
             player.displayClientMessage(
                 net.minecraft.network.chat.Component.literal(
-                    "Drone returned to the field origin."),
+                    droneId + " returned to the field origin."),
                 false
             );
         }

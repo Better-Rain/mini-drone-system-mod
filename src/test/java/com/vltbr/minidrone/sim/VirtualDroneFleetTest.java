@@ -27,7 +27,8 @@ class VirtualDroneFleetTest {
         assertNotNull(first);
         assertEquals("minecraft_drone_01", first.snapshot().droneId());
         assertEquals(VirtualDroneFleet.DEFAULT_DRONE_ID, first.snapshot().droneId());
-        assertEquals(1, first.snapshot().systemId());
+        assertEquals(VirtualDroneFleet.FIRST_SYSTEM_ID, first.snapshot().systemId());
+        assertEquals(54, first.snapshot().systemId(), "the backend's virtual link declares 54 / 1");
         assertEquals(1, first.snapshot().componentId());
         assertEquals(first, fleet.primary(), "one drone is the primary one");
     }
@@ -41,9 +42,9 @@ class VirtualDroneFleetTest {
 
         assertEquals(List.of("minecraft_drone_01", "minecraft_drone_02", "minecraft_drone_03"),
             fleet.ids(), "creation order is kept");
-        assertEquals(1, one.snapshot().systemId());
-        assertEquals(2, two.snapshot().systemId());
-        assertEquals(3, three.snapshot().systemId());
+        assertEquals(54, one.snapshot().systemId());
+        assertEquals(55, two.snapshot().systemId());
+        assertEquals(56, three.snapshot().systemId());
         assertEquals(three, fleet.byId("minecraft_drone_03"));
         assertNull(fleet.byId("minecraft_drone_09"), "unknown ids are not invented");
         assertNull(fleet.byId(null));
@@ -98,9 +99,56 @@ class VirtualDroneFleetTest {
         assertEquals(3.5, nimble.vehicleModel().thrustToWeight(), 1.0e-9);
     }
 
+    /**
+     * A fleet rebuilt from a saved world keeps the identities the monitoring side knows.
+     *
+     * <p>Placed drones are saved with the world; if the restart handed out fresh ids and
+     * system ids, every aircraft the operator had already commanded would come back renamed.
+     */
     @Test
-    void theFleetHasACeiling() {
+    void restoringASavedWorldKeepsIdentitiesAndContinuesAllocation() {
         VirtualDroneFleet fleet = new VirtualDroneFleet();
+        VirtualDroneState first = fleet.restore("minecraft_drone_01", 54, VehicleModel.DEFAULTS);
+        VirtualDroneState second = fleet.restore("minecraft_drone_02", 55, VehicleModel.DEFAULTS);
+
+        assertNotNull(first);
+        assertNotNull(second);
+        assertEquals(54, first.snapshot().systemId(), "the saved system id comes back");
+        assertEquals(55, second.snapshot().systemId());
+        assertEquals(List.of("minecraft_drone_01", "minecraft_drone_02"), fleet.ids(),
+            "creation order is the id order the world was saved in");
+        assertNull(fleet.restore("minecraft_drone_02", 55, VehicleModel.DEFAULTS),
+            "restoring a drone twice is not a second drone");
+
+        // A drone placed after the restart cannot collide with a restored one.
+        VirtualDroneState placed = fleet.create(VehicleModel.DEFAULTS);
+        assertNotNull(placed);
+        assertEquals("minecraft_drone_03", placed.snapshot().droneId());
+        assertEquals(56, placed.snapshot().systemId());
+
+        assertEquals(0, VirtualDroneFleet.indexFromId(null));
+        assertEquals(0, VirtualDroneFleet.indexFromId("minecraft_drone"));
+        assertEquals(7, VirtualDroneFleet.indexFromId("minecraft_drone_07"));
+        assertEquals(12, VirtualDroneFleet.indexFromId("custom_drone_12"));
+    }
+
+    /** A saved drone without a usable system id still gets one, and keeps its id. */
+    @Test
+    void aRestoredDroneWithoutASavedSystemIdGetsAFreshOne() {
+        VirtualDroneFleet fleet = new VirtualDroneFleet();
+        VirtualDroneState restored = fleet.restore("minecraft_drone_04", 0, VehicleModel.DEFAULTS);
+
+        assertNotNull(restored);
+        assertEquals("minecraft_drone_04", restored.snapshot().droneId());
+        assertEquals(VirtualDroneFleet.FIRST_SYSTEM_ID, restored.snapshot().systemId(),
+            "an unknown system id falls back to the first one this fleet hands out");
+
+        // Allocation still moves past the restored slot, so the next drone is not number 4.
+        assertEquals("minecraft_drone_05", fleet.create(VehicleModel.DEFAULTS).snapshot().droneId());
+    }
+
+    @Test
+    void theFleetHasACeiling() {        VirtualDroneFleet fleet = new VirtualDroneFleet();
         for (int i = 0; i < VirtualDroneFleet.MAX_DRONES; i++) {
             assertNotNull(fleet.create(VehicleModel.DEFAULTS), "drone " + (i + 1));
         }

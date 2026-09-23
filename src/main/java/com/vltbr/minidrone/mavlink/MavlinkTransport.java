@@ -3,6 +3,7 @@ package com.vltbr.minidrone.mavlink;
 import com.vltbr.minidrone.MiniDroneMod;
 import com.vltbr.minidrone.sim.VirtualDroneManager;
 import com.vltbr.minidrone.sim.VirtualDroneSnapshot;
+import com.vltbr.minidrone.sim.VirtualDroneState;
 import net.minecraft.server.MinecraftServer;
 
 import java.io.IOException;
@@ -12,6 +13,8 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -104,7 +107,19 @@ public final class MavlinkTransport {
         mocapControlServer = new MocapControlServer(mocapControlPort, forwardingHold);
         // The autopilot runs commands on the server thread, but only needs an
         // executor: that keeps it free of game classes and testable.
-        autopilot = new VirtualAutopilot(server::execute, droneManager, outbound::add, forwardingHold);
+        autopilot = new VirtualAutopilot(
+            server::execute,
+            droneManager,
+            outbound::add,
+            forwardingHold,
+            (level, message) -> {
+                switch (level) {
+                    case "debug" -> MiniDroneMod.LOGGER.debug(message);
+                    case "warn" -> MiniDroneMod.LOGGER.warn(message);
+                    default -> MiniDroneMod.LOGGER.info(message);
+                }
+            }
+        );
     }
 
     public void start() {
@@ -226,45 +241,68 @@ public final class MavlinkTransport {
 
             while (running.get()) {
                 long now = System.currentTimeMillis();
-                VirtualDroneSnapshot state = droneManager.snapshot();
+                // One frame describes one vehicle, so every periodic message is built and
+                // sent once per drone with that drone's own system id. The flight controller
+                // only answers for a system id it knows, so an unpublished drone is one the
+                // monitoring side cannot see at all.
+                List<VirtualDroneSnapshot> fleet = fleetSnapshots();
                 if (now >= nextFastTelemetryAt) {
-                    send(socket, MavlinkProtocol.ATTITUDE, MavlinkMessages.attitude(state));
-                    send(
-                        socket,
-                        MavlinkProtocol.LOCAL_POSITION_NED,
-                        MavlinkMessages.localPositionNed(state)
-                    );
+                    for (VirtualDroneSnapshot state : fleet) {
+                        send(socket, state, MavlinkProtocol.ATTITUDE, MavlinkMessages.attitude(state));
+                        send(
+                            socket,
+                            state,
+                            MavlinkProtocol.LOCAL_POSITION_NED,
+                            MavlinkMessages.localPositionNed(state)
+                        );
+                    }
                     nextFastTelemetryAt = now + FAST_TELEMETRY_PERIOD_MS;
                 }
                 if (now >= nextExtendedStateAt) {
-                    send(
-                        socket,
-                        MavlinkProtocol.EXTENDED_SYS_STATE,
-                        MavlinkMessages.extendedSysState(state)
-                    );
+                    for (VirtualDroneSnapshot state : fleet) {
+                        send(
+                            socket,
+                            state,
+                            MavlinkProtocol.EXTENDED_SYS_STATE,
+                            MavlinkMessages.extendedSysState(state)
+                        );
+                    }
                     nextExtendedStateAt = now + EXTENDED_STATE_PERIOD_MS;
                 }
                 if (now >= nextSlowTelemetryAt) {
-                    send(socket, MavlinkProtocol.SYS_STATUS, MavlinkMessages.sysStatus(state));
-                    send(
-                        socket,
-                        MavlinkProtocol.EKF_STATUS_REPORT,
-                        MavlinkMessages.ekfStatusReport()
-                    );
+                    for (VirtualDroneSnapshot state : fleet) {
+                        send(socket, state, MavlinkProtocol.SYS_STATUS, MavlinkMessages.sysStatus(state));
+                        send(
+                            socket,
+                            state,
+                            MavlinkProtocol.EKF_STATUS_REPORT,
+                            MavlinkMessages.ekfStatusReport()
+                        );
+                    }
                     nextSlowTelemetryAt = now + SLOW_TELEMETRY_PERIOD_MS;
                 }
                 if (now >= nextHeartbeatAt) {
-                    send(socket, MavlinkProtocol.HEARTBEAT, MavlinkMessages.heartbeat(state));
+                    for (VirtualDroneSnapshot state : fleet) {
+                        send(socket, state, MavlinkProtocol.HEARTBEAT, MavlinkMessages.heartbeat(state));
+                    }
                     nextHeartbeatAt = now + HEARTBEAT_PERIOD_MS;
                 }
                 if (mocapHealthEnabled.get() && now >= nextMocapHealthAt) {
-                    sendMocapHealth(socket, state);
+                    // One beacon describes the source, not a vehicle: it carries the
+                    // advertised identity plus the fleet block.
+                    sendMocapHealth(socket, droneManager.snapshot());
                     nextMocapHealthAt = now + MOCAP_HEALTH_PERIOD_MS;
                 }
 
                 MavlinkOutboundMessage message;
                 while ((message = outbound.poll()) != null) {
-                    send(socket, message.messageId(), message.payload());
+                    send(
+                        socket,
+                        message.systemId(),
+                        message.componentId(),
+                        message.messageId(),
+                        message.payload()
+                    );
                 }
 
                 byte[] buffer = new byte[4096];
@@ -376,12 +414,47 @@ public final class MavlinkTransport {
         }
     }
 
-    private void send(DatagramSocket socket, int messageId, byte[] payload) throws IOException {
-        VirtualDroneSnapshot state = droneManager.snapshot();
+    /**
+     * Every drone this world flies, in creation order, as the snapshots the wire needs.
+     *
+     * <p>Read per loop rather than cached: a drone placed while the transport is running has
+     * to start appearing in telemetry on the next frame, which is what makes a second
+     * aircraft discoverable at all. A drone without a snapshot yet is skipped rather than
+     * sent as a null frame.
+     */
+    static List<VirtualDroneSnapshot> fleetSnapshots(List<VirtualDroneState> fleet) {
+        if (fleet == null || fleet.isEmpty()) {
+            return List.of();
+        }
+        List<VirtualDroneSnapshot> snapshots = new ArrayList<>(fleet.size());
+        for (VirtualDroneState drone : fleet) {
+            if (drone == null) {
+                continue;
+            }
+            VirtualDroneSnapshot state = drone.snapshot();
+            if (state != null) {
+                snapshots.add(state);
+            }
+        }
+        return snapshots;
+    }
+
+    private List<VirtualDroneSnapshot> fleetSnapshots() {
+        return fleetSnapshots(droneManager.fleet().all());
+    }
+
+    private void send(DatagramSocket socket, VirtualDroneSnapshot state, int messageId, byte[] payload)
+        throws IOException {
+        send(socket, state.systemId(), state.componentId(), messageId, payload);
+    }
+
+    private void send(
+        DatagramSocket socket, int systemId, int componentId, int messageId, byte[] payload
+    ) throws IOException {
         byte[] frame = MavlinkV1Codec.encode(
             sequence++ & 0xFF,
-            state.systemId(),
-            state.componentId(),
+            systemId,
+            componentId,
             messageId,
             payload
         );

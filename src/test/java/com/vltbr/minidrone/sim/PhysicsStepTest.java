@@ -129,4 +129,58 @@ class PhysicsStepTest {
         assertTrue(feet >= 4.0 - EPSILON, "the accepted position has solid ground under it");
         assertFalse(asked.isEmpty());
     }
+
+    /**
+     * A step too long to resolve in one go is swept, not skipped.
+     *
+     * <p>The caller's cap used to mean "apply it directly without asking the world", and a
+     * terminal-velocity fall in a 0.25 m-per-block world is past that cap: the vehicle went
+     * through the floor and kept falling.
+     */
+    @Test
+    void sweepsALongFallInsteadOfPassingThroughTheFloor() {
+        // 12 blocks in one tick: a fall the old code would have carried straight through.
+        PhysicsStep.Result result = PhysicsStep.resolveSwept(
+            0.0, 12.0, 0.0, 0.0, -12.0, 0.0, HALF_WIDTH, HALF_HEIGHT, floorAt(0.0), 1.5, 64);
+
+        assertTrue(result.blockedVertically(), "the floor stopped it");
+        assertTrue(result.y() - HALF_HEIGHT >= 0.0 - EPSILON,
+            "and it is resting on the floor, not under it: y=" + result.y());
+    }
+
+    /** The same for a long horizontal step against a wall. */
+    @Test
+    void sweepsALongStepIntoAWall() {
+        PhysicsStep.Result result = PhysicsStep.resolveSwept(
+            0.0, 10.0, 0.0, 0.0, 0.0, 12.0, HALF_WIDTH, HALF_HEIGHT, wallAtZ(6.0), 1.5, 64);
+
+        assertTrue(result.blockedZ(), "the wall stopped it");
+        assertTrue(result.z() + HALF_WIDTH <= 6.0 + EPSILON,
+            "and it did not end up past the wall: z=" + result.z());
+    }
+
+    /** Short steps still take the single-resolution path, unchanged. */
+    @Test
+    void sweepsShortStepsExactlyLikeResolve() {
+        Predicate<double[]> world = floorAt(4.0);
+        PhysicsStep.Result direct = PhysicsStep.resolve(
+            0.1, 8.0, -0.2, 0.07, -0.4, 0.05, HALF_WIDTH, HALF_HEIGHT, world);
+        PhysicsStep.Result swept = PhysicsStep.resolveSwept(
+            0.1, 8.0, -0.2, 0.07, -0.4, 0.05, HALF_WIDTH, HALF_HEIGHT, world, 1.5, 64);
+
+        assertEquals(direct.x(), swept.x(), EPSILON);
+        assertEquals(direct.y(), swept.y(), EPSILON);
+        assertEquals(direct.z(), swept.z(), EPSILON);
+        assertEquals(direct.blockedY(), swept.blockedY());
+    }
+
+    /** A step past the sub-step budget is a carry again: spawning really is a teleport. */
+    @Test
+    void carriesAStepBeyondTheSubStepBudget() {
+        PhysicsStep.Result result = PhysicsStep.resolveSwept(
+            0.0, 64.0, 0.0, 0.0, -200.0, 0.0, HALF_WIDTH, HALF_HEIGHT, floorAt(0.0), 1.5, 64);
+
+        assertEquals(-136.0, result.y(), EPSILON);
+        assertFalse(result.blockedVertically());
+    }
 }

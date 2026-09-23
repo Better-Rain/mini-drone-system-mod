@@ -30,6 +30,33 @@ class NedWorldTransformTest {
     }
 
     /**
+     * The rendered attitude must agree with the monitoring view.
+     *
+     * <p>The scene is the documented mirror of NED (world x = -east, z = -north), and in that
+     * frame the heading comes back as {@code 180 - yaw} while pitch and roll keep their signs.
+     * Negating the pitch with the yaw made a vehicle accelerating forward render nose-up next
+     * to a monitoring view showing it nose-down: the operator saw the two as opposite.
+     */
+    @Test
+    void keepsTheAttitudeSignsTheMonitoringViewUses() {
+        NedWorldTransform transform = new NedWorldTransform(0.0, 0.0, 0.0);
+
+        // Forward flight: the nose is down, i.e. negative pitch in NED.
+        WorldPose forward = transform.toWorldPose(0.0, 0.0, 0.0, 0.0, -0.3, 0.0);
+        assertTrue(forward.pitchDegrees() < 0.0f,
+            "a nose-down attitude has to stay nose-down, got " + forward.pitchDegrees());
+        assertEquals(-0.3, Math.toRadians(forward.pitchDegrees()), EPSILON);
+
+        // Climbing: nose up, positive in NED.
+        WorldPose climbing = transform.toWorldPose(0.0, 0.0, 0.0, 0.0, 0.3, 0.0);
+        assertEquals(0.3, Math.toRadians(climbing.pitchDegrees()), EPSILON);
+
+        // A right bank keeps its own sign as well.
+        WorldPose banked = transform.toWorldPose(0.0, 0.0, 0.0, 0.25, 0.0, 0.0);
+        assertEquals(0.25, Math.toRadians(banked.rollDegrees()), EPSILON);
+    }
+
+    /**
      * With an arena the origin has to be the arena centre, because the backend
      * draws its field centred on the local NED origin: the drone's position
      * relative to the field is only meaningful when those two agree.

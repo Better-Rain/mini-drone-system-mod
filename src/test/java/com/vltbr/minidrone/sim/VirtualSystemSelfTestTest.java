@@ -11,8 +11,8 @@ class VirtualSystemSelfTestTest {
         VirtualSystemSelfTest.Report report = VirtualSystemSelfTest.run();
 
         assertTrue(report.successful(), report::summary);
-        assertEquals(10, report.total());
-        assertEquals(10, report.passed());
+        assertEquals(11, report.total());
+        assertEquals(11, report.passed());
         assertTrue(report.failures().isEmpty());
     }
 }

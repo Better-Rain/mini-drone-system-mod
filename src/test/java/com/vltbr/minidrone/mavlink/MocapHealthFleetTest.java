@@ -64,7 +64,14 @@ class MocapHealthFleetTest {
         assertTrue(payload.contains("\"drones\":["), "the block is there");
         assertTrue(payload.contains("\"drone_id\":\"minecraft_drone_01\""), "first drone");
         assertTrue(payload.contains("\"drone_id\":\"minecraft_drone_02\""), "second drone");
-        assertTrue(payload.contains("\"system_id\":2"), "with its own MAVLink identity");
+        assertTrue(
+            payload.contains("\"system_id\":" + VirtualDroneFleet.FIRST_SYSTEM_ID),
+            "the first keeps the documented 54"
+        );
+        assertTrue(
+            payload.contains("\"system_id\":" + (VirtualDroneFleet.FIRST_SYSTEM_ID + 1)),
+            "with its own MAVLink identity"
+        );
         assertTrue(payload.contains("\"safety_latched\":false"), "and its own latch state");
         // The original fields survive: the block was appended, not woven in.
         assertTrue(payload.contains("\"schema\":\"mocap_relay_health_v1\""));
