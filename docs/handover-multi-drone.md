@@ -894,6 +894,132 @@ lift = SELECTION_TAG_HEIGHT_M
 ①标签屏幕高度恒定（±0.5 px）、②**净空 > 飞机屏幕尺寸的 0.5 倍**（按距离分别计算，不用固定阈值）。
 前端 **210/210**。
 
+## 3.36 俯视角下选中框过大 + 标签压住飞机（2026-09-22，操作者反馈）
+
+操作者：**俯视角下适配不行，起飞后框会特别大**。
+
+### 复现与真因
+
+俯视角有**两个**入口，两者都与"按距离定尺寸"这套规则冲突：
+
+| 视图 | 相机 | 尺寸基准 |
+| --- | --- | --- |
+| 顶视（`setTopView`） | **透视**，但相机高度只有 `max(场宽,场深)×1.2`（默认 4.8 m） | 距离**很近** |
+| 战术俯视（`toggleCameraMode`） | **正交** `OrthographicCamera`（视锥高 `2.4`） | **与距离无关** |
+
+实测（透视顶视，飞机从 0 m 升到 4 m，相机在 4.8 m 高）：
+
+```text
+高度 | 相机距 | 飞机 px | 框 px | 框占屏
+  0 m |  4.80 |    38 |   108 |  10%
+  2 m |  2.80 |    65 |   174 |  16%
+  3 m |  1.80 |   102 |   270 |  25%
+  4 m |  0.80 |   229 |   608 |  56%   ← 占满半个屏幕
+```
+
+即：**飞机上升 = 离俯视相机更近**，飞机自身屏幕尺寸暴涨（229 px），而框始终是机体的 **2.65 倍**，
+于是跟着涨到 **56%** ✗。正交视图更彻底——`getSelectionEmphasis()` 按距离算的 emphasis 在那里**毫无意义**。
+
+顺带发现第二个 bug：标签"沿世界向上抬起"在俯视下**正对镜头**，投影后偏移为 **0 px** ✗
+（实测：0/1/2/3 m 高度，标签与飞机屏幕位置完全重合）。
+
+### 修复
+
+| 位置 | 改动 |
+| --- | --- |
+| `getViewportSpanAt(point, camera)`（新） | **唯一的尺寸换算口**：透视相机用 `2·d·tan(fov/2)`；**正交相机用视锥高 `top−bottom`（除以 zoom）**，与距离无关 |
+| `getTagScreenScale(camera)` | 改为"屏幕占比"表达：`span × SELECTION_TAG_SCREEN_FRACTION / 标签宽`（该常量由原 2 m 基准 + 60° fov 反推，保持既有观感） |
+| `getReticleScale(camera, emphasis)`（新） | 在 emphasis 之上加**屏幕占比上限** `SELECTION_RETICLE_MAX_SCREEN_FRACTION = 0.25`：远了该强调，近了不许吃满屏幕 |
+| `isTopDownView(camera)`（新） | 用**视方向**判断（`|forward.y| > 0.9`，约偏垂直 26° 内），对透视/正交都成立 |
+| `updateSelectionTag` | 俯视时沿**相机 up 轴**抬起，而非世界 up；其余视角仍沿世界 up |
+
+### 修复后实测（四种相机）
+
+```text
+视图           | 高度 | 框占屏 | 标签占屏 | 标签离机 px
+三分视         |  0 m | 11.7% | 8.10% |   93
+三分视         |  4 m | 11.7% | 9.42% | 1589
+透视顶视       |  0 m | 10.0% | 7.44% |   78
+透视顶视       |  4 m | 25.0% | 7.69% |   48      ← 封顶生效（原 56%）
+正交战术俯视   |  0 m | 11.6% | 8.66% |   89
+正交战术俯视   |  4 m | 10.8% | 8.66% |   89      ← 与高度无关，符合正交语义
+正视图         |  0 m | 10.0% | 8.76% |   94
+正视图         |  4 m |  8.7% | 9.57% |  668
+```
+
+标签占比在各种视角下稳定在 7.4%–9.6%，且**俯视下不再压在飞机上**（78–48 px 偏移）✓。
+
+**测试**：`tests/selection-reticle.test.mjs` 新增 2 项——"俯视框必须仍是标记（≤26% 屏高，且不塌缩）"、
+"俯视标签必须让开飞机（>20 px）"，并改用**真实相机**（透视 + 正交 + 顶视）替换原先手搓的假相机
+（假相机没有 `fov`/`top`/`bottom`，会静默让测量失真）。前端 **212/212**。
+
+## 3.37 远景改为"四个等边三角形靶心" + Minecraft 启动脚本（2026-09-24）
+
+### (a) 远景样式：镜头拉远后换成旋转靶心
+
+操作者要求：镜头远离到一定程度后，不再是瞄准框，而是"四个等边三角形组成的靶心围绕着目标旋转"。
+经确认：**始终正对镜头、在屏幕平面内自转**。
+
+| 项 | 实现 |
+| --- | --- |
+| 新对象 | `selection-far-target`（挂在 ring 上，**不继承机体姿态**），内含 1×1 的 quad |
+| 图形 | canvas 画 **4 个等边三角形**（0/90/180/270° 均匀分布，尖角朝内、平边朝外）；边长 = 高 × 2/√3 |
+| 朝向 | 每帧 `quaternion.copy(camera.quaternion)`，再 `rotateZ(turn)` —— 局部 Z 即视线轴，所以**在屏幕平面内自转** |
+| 尺寸 | **视口高度的 16%**（屏幕占比，任何距离都一样大）；quad 是单位方形，按 span 缩放 |
+| 自转 | 3.2 s 一圈；`ui-reduced-motion` 下不转 |
+| 切换 | 与瞄准框**交叉淡化**，不是硬切：ramp 0.45→0.88（约 **10 m → 16 m**） |
+
+⚠️ **关键坑**：`getSelectionEmphasis()` 返回的是**尺寸倍增器 1.0→3.2**，不是 0→1 的比例 ✗。
+最初把淡化阈值写成 0.55/0.95 去比它，结果**任何距离**都判定为"远景"（最小值就是 1.0），
+近处也显示靶心、瞄准框 alpha 恒为 0。修法：新增 `getSelectionDistanceRatio(camera)` 返回
+**未缓动的 0..1 距离 ramp**，淡化改用它（emphasis 内部也改为复用同一 ramp）。
+
+另外：`NoBlending` 会让 alpha 失效，所以把着色器材质的混合改为 `NormalBlending`（不透明时结果不变），
+并新增 `opacity` uniform 供淡化使用。
+
+实测：
+
+```text
+距离 | ramp | emphasis | 框 alpha | 靶心占比 | 靶心
+  1 m | 0.00 |     1.00 |     1.00 |   0.0% | 隐藏
+  8 m | 0.29 |     1.46 |     1.00 |   0.0% | 隐藏
+ 12 m | 0.53 |     2.20 |     0.91 |  16.0% | 显示   ← 开始交叉
+ 16 m | 0.76 |     2.89 |     0.18 |  16.0% | 显示
+ 20 m | 1.00 |     3.20 |     0.00 |  16.0% | 显示   ← 框已完全退场
+ 30 m | 1.00 |     3.20 |     0.00 |  16.0% | 显示
+```
+
+其他验证：靶心法线与相机法线点积 **1.0000**（完全正对）；自转后法线不变（确认在屏幕平面内转）；
+4 个三角形全部等边（边长 30.0 = 高 26 × 2/√3）、尖角均朝内、最外半径 48/64 不溢出画布。
+
+### (b) `scripts/start-minecraft.ps1`
+
+现场重启时游戏是用临时脚本拼装 Fabric 启动命令拉起的，现固化为仓库脚本：
+
+- 合并 **profile + 原版** 的 libraries 与 arguments（profile 是 `inheritsFrom 1.21.1`，两者缺一不可）；
+- 按 `rules` 过滤（Windows / x64 / features），解析 maven 坐标到 `libraries\` 路径；
+- 带上 `-Dmini_drone.world.metres_per_block=<参数>`、`-Dmini_drone.mocap.enabled=true`；
+- **世界名默认取 `saves/` 里最新修改的那个**（现场世界名是中文，写死有编码风险）；
+- `-DryRun` 打印完整命令便于排查；`-Console` 用 java.exe 保留控制台；
+- 参数逐个**引号包裹**：`Start-Process -ArgumentList` 不做转义，路径里的空格会把参数拆开。
+
+用法：`npm run minecraft:start` 或 `.\scripts\start-minecraft.ps1 -DryRun`。
+
+### (c) ⚠️ 后端 mocap 参数名踩坑（重启环境时踩到）
+
+重启后端时按记忆写了 `--mocap-mode` / `--mocap-profile` / `--mavlink-max-vehicle-count`，
+**全部被静默忽略**，后端落在默认的 **real** 模式（源 `10.1.1.22`、health `15151`），
+于是动捕信标收不到（`beacon_received: false`）、只发现 1 个槽位。正确名字：
+
+| 错 | 对 |
+| --- | --- |
+| `--mocap-mode` | `--mocap-source-mode` |
+| `--mocap-profile` | `--mocap-source-profile` |
+| `--mavlink-max-vehicle-count` | `--mavlink-max-vehicles` |
+
+改正后立刻 3 架飞机全部 `admission=ready / beacon=true / healthy=true`。
+**参数名一律从 `backend/src/config/RuntimeConfig.cpp` 核对，不要凭记忆写。**
+
 ## 4. 现场操作手册（这次踩过的坑都在这）
 
 - **启动**：`npm run dev:real`（后端 + relay + 前端一条命令）或分开跑 `npm run mocap:relay` + `npm run dev:all`。
